@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs grep:*)",
+      "Bash(du -sh /d/1_Project/SpringSpearPLA/*)",
+      "Bash(wc -l /d/1_Project/SpringSpearPLA/assets/PLAGameFoundation/**/*.ts)"
+    ]
+  }
+}

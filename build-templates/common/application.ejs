@@ -1,0 +1,69 @@
+<%- include(versionCheckTemplate, { version: '1.0.0'}) %>
+
+let cc;
+
+export class Application {
+    startLoadScene = 0;
+    endLoadScene = 0;
+
+    constructor () {
+        this.settingsPath = '<%= settingsJsonPath %>';
+        this.showFPS = <%= showFPS %>;
+    }
+
+    init (engine) {
+        console.log("Init engine");
+        console.log("Tracking config", trackingConfig);
+
+        cc = engine;
+        cc.GoogleAnalyticsTracker = window.GoogleAnalyticsTracker;
+        cc.game.onPreBaseInitDelegate.add(this.onPreBaseInit.bind(this));
+        cc.game.onPostProjectInitDelegate.add(this.onPostProjectInit.bind(this));
+        cc.error = function (...data) {
+            console.error(...data);
+        }
+    }
+
+    onPreBaseInit(){
+        console.log("onPreBaseInit")
+    }
+
+    onPostProjectInit () {
+        // do custom logic
+        cc.director.once(cc.Director.BEFORE_SCENE_LOADING, this.onBeforeSceneLoading, this);
+        cc.director.once(cc.Director.AFTER_SCENE_LAUNCH , this.onAfterSceneLaunch, this);
+
+    }
+
+    onBeforeSceneLoading(name){
+        console.log("onBeforeSceneLoading", name);
+        cc.GoogleAnalyticsTracker.sendEvent("STARTING");
+        this.startLoadScene = performance.now();
+    }
+
+    onAfterSceneLaunch(){
+        console.log("onAfterSceneLaunch");
+        this.endLoadScene = performance.now();
+        cc.director.once(cc.Director.AFTER_DRAW , this.onceAfterDraw, this);
+    }
+
+    onceAfterDraw(e){
+        console.log("onceAfterDraw");
+        cc.GoogleAnalyticsTracker.sendEvent("IMPRESSION", {duration: Number((this.endLoadScene - this.startLoadScene).toFixed(3))});
+    }
+
+    start () {
+        return cc.game.init({
+            debugMode: <%= debugMode %> ? cc.DebugMode.INFO : cc.DebugMode.ERROR,
+            settingsPath: this.settingsPath,
+            overrideSettings: {
+                // assets: {
+                //      preloadBundles: [{ bundle: 'main', version: 'xxx' }],
+                // }
+                profiling: {
+                    showFPS: this.showFPS,
+                }
+            }
+        }).then(() => cc.game.run());
+    }
+}
