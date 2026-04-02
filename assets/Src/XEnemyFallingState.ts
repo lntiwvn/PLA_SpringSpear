@@ -27,7 +27,6 @@ export class XEnemyFallingState implements IState<XEnemy, [string], []> {
         );
 
         const groundZone = XGameBridge.get()?.findGroundZoneForEnemy(context) ?? null;
-        console.log("Ground Zone", groundZone)
         if (groundZone) {
             context.landOnGround(groundZone);
             XGameObserver.invoke("onEnemyIdle", context, groundZone);

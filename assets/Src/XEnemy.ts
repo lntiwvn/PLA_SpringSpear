@@ -15,6 +15,8 @@ import { EDITOR } from "cc/env";
 import XGameBridge, { XEnemySplitKind } from "./XGameBridge";
 import { BoxCollider2D } from "cc";
 import { ERigidBody2DType } from "cc";
+import { ParticleSystem } from "cc";
+import { AudioSource } from "cc";
 const { ccclass, property, executeInEditMode } = _decorator;
 
 type XEnemySplitPiece = {
@@ -47,6 +49,18 @@ export class XEnemy extends Component {
         this._visual = x;
         this.onFocusInEditor()
     }
+
+    @property([ParticleSystem])
+    bloods: ParticleSystem[] = [] 
+
+    @property(AudioSource)
+    deadAu: AudioSource = null
+
+    @property(AudioSource)
+    scareAu: AudioSource = null
+
+    @property(AudioSource)
+    balloonPop: AudioSource = null
 
     onFocusInEditor(): void {
         const _att = Object.keys(XEnemyStateId).filter((_key) => Number.isNaN(Number(_key)));
@@ -278,10 +292,10 @@ export class XEnemy extends Component {
             );
 
             piece.body.node.active = true;
-piece.body.type = ERigidBody2DType.Dynamic
-const mass = piece.body.getMass();
-            //piece.body.linearVelocity = linearVelocity;
-            //piece.body.angularVelocity = 180 * (outward.x !== 0 ? -outward.x : outward.y || 1);
+            piece.body.type = ERigidBody2DType.Dynamic
+            const mass = piece.body.getMass();
+            piece.body.linearVelocity = linearVelocity;
+            piece.body.angularVelocity = 180 * (outward.x !== 0 ? -outward.x : outward.y || 1);
             piece.body.applyForceToCenter(new Vec2(
                 linearVelocity.x * mass,
                 linearVelocity.y * mass,
@@ -412,12 +426,14 @@ const mass = piece.body.getMass();
     }
 
     public enterIdle(): boolean {
+        this.scareAu?.stop();
         return this.changeState<XEnemyIdleState>(XEnemyStateId.Idle, [this.getAnim(XEnemyStateId.Idle)]);
     }
 
     public enterFalling(): boolean {
         if (this.balloonZone) {
             this.balloonZone.node.active = false;
+            this.balloonPop?.play();
         }
         return this.changeState<XEnemyFallingState>(XEnemyStateId.Falling, [this.getAnim(XEnemyStateId.Falling)]);
     }
@@ -432,6 +448,7 @@ const mass = piece.body.getMass();
             return false;
         }
 
+        this.scareAu?.play();
         return this.changeState<XEnemyScareState>(XEnemyStateId.Scare, [this.getAnim(XEnemyStateId.Scare)]);
     }
 
@@ -459,6 +476,6 @@ const mass = piece.body.getMass();
         if (splitKind && hitDirection) {
             this.prepareSplit(splitKind, hitDirection);
         }
-        return this.changeState<XEnemyDeadState>(XEnemyStateId.Dead, [this.getAnim(XEnemyStateId.Dead)]);
+        return this.changeState<XEnemyDeadState>(XEnemyStateId.Dead, [this.getAnim(XEnemyStateId.Dead), this.bloods, this.deadAu]);
     }
 }

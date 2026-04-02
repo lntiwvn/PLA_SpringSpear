@@ -104,21 +104,35 @@ export class XGameController extends Component {
     }
 
     public findSpearHit(spear: XSpear): { enemy: XEnemy; kind: "body" | "balloon" } | null {
+        spear.refreshIgnoredCollisionZones(this.enemies);
+
         for (const enemy of this.enemies) {
             if (enemy.stateMachine.cid === null) {
                 continue;
             }
 
-            if (enemy.bodyZone?.node.active && spear.checkCollisionWithZone(enemy.bodyZone)) {
+            if (
+                enemy.bodyZone?.node.active
+                && spear.checkCollisionWithZone(enemy.bodyZone)
+                && !spear.shouldIgnoreCollisionZone(enemy.bodyZone)
+            ) {
                 return { enemy, kind: "body" };
             }
 
-            if (enemy.balloonZone?.node.active && spear.checkCollisionWithZone(enemy.balloonZone)) {
+            if (
+                enemy.balloonZone?.node.active
+                && spear.checkCollisionWithZone(enemy.balloonZone)
+                && !spear.shouldIgnoreCollisionZone(enemy.balloonZone)
+            ) {
                 return { enemy, kind: "balloon" };
             }
         }
 
         return null;
+    }
+
+    public captureSpearLaunchOverlaps(spear: XSpear): void {
+        spear.captureIgnoredCollisionZones(this.enemies);
     }
 
     public findGroundZoneForEnemy(enemy: XEnemy): CollisionZone | null {

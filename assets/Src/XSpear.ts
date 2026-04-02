@@ -1,7 +1,8 @@
-import { _decorator, Color, Component, Enum, EventTouch, Graphics, math, Node, sp, UITransform, Vec2, Vec3 } from "cc";
+import { _decorator, Color, Component, Enum, EventTouch, Graphics, TweenEasing, easing, math, Node, sp, UITransform, Vec2, Vec3 } from "cc";
 import { EDITOR } from "cc/env";
 import { AnimSelector } from "./AnimSelector";
 import { CollisionZone } from "./CollisionZone";
+import Easing from "./Easing";
 import { GameBoard } from "./GameBoard";
 import XGameBridge from "./XGameBridge";
 import { XEnemy } from "./XEnemy";
@@ -11,6 +12,7 @@ import { StateMachine } from "./StateMachine";
 import { XSpearChargingState } from "./XSpearChargingState";
 import { XSpearFlyingState } from "./XSpearFlyingState";
 import { XSpearIdleState } from "./XSpearIdleState";
+import { AudioSource } from "cc";
 
 const { ccclass, property, executeInEditMode } = _decorator;
 
@@ -31,11 +33,28 @@ export class XSpear extends Component {
     @property
     public flySpeed: number = 1500;
 
+    @property({ tooltip: "Initial speed scale applied right after release." })
+    public flyScale: number = 1;
+
+    @property({ tooltip: "Duration for flyScale to ease back to 1." })
+    public flyScaleDuration: number = 0.25;
+
+    @property({ type: Easing })
+    public flyEasing: TweenEasing = "linear";
+
+    @property({ type: Easing })
+    public flyScaleEasing: TweenEasing = "linear";
+
     @property({ tooltip: "Minimum angle from the pinned edge." })
     public minAngleFromEdge: number = 25;
 
     @property({ type: XSpearStateId })
     public defaultState: XSpearStateId = XSpearStateId.Idle;
+
+    @property(AudioSource)
+    compressAu: AudioSource = null
+    @property(AudioSource)
+    shootAu: AudioSource = null
 
     @property({ type: sp.Skeleton })
     protected _visual: sp.Skeleton = null;
@@ -71,9 +90,17 @@ export class XSpear extends Component {
     protected readonly _chargeDir: Vec2 = new Vec2();
     protected readonly _pinnedEdgeNormal: Vec2 = new Vec2(0, 1);
     protected readonly _stuckUpDirection: Vec2 = new Vec2(0, 1);
+    protected readonly _dragTouchStart: Vec2 = new Vec2();
+    protected readonly _dragFreeEndStart: Vec2 = new Vec2();
+    protected readonly _lastDragTouchDelta: Vec2 = new Vec2();
     protected _board: GameBoard = null;
     protected _didInitializeState: boolean = false;
     protected _laserTarget: XEnemy | null = null;
+    protected _lastDragRotationDirection: number = 0;
+    protected _flightDistance: number = 0;
+    protected _flightProgress: number = 0;
+    protected _flightScaleElapsed: number = 0;
+    protected readonly _ignoredCollisionZoneIds: Set<string> = new Set();
     protected _map: Record<XSpearStateId, string> = {
         [XSpearStateId.Idle]: "",
         [XSpearStateId.Charging]: "",
@@ -112,10 +139,6 @@ export class XSpear extends Component {
 
     }
 
-    protected start(): void {
-        this.initializeStateFromCurrentPose();
-    }
-
     protected update(dt: number): void {
         this._stateMachine.update(this, dt);
     }
@@ -136,6 +159,7 @@ export class XSpear extends Component {
 
     public init(board: GameBoard): void {
         this._board = board;
+        this._board.updateBounds();
         this.initializeStateFromCurrentPose();
     }
 
@@ -161,6 +185,14 @@ export class XSpear extends Component {
         return new Vec2(pos.x, pos.y);
     }
 
+    public getPinnedBoardPosition(): Vec2 {
+        if (!this._board) {
+            return this.getPinnedPosition();
+        }
+
+        return this._board.fromNodePoint(this.node.position, this.node.parent);
+    }
+
     public getFreeEndPosition(): Vec2 {
         const pinned = this.getPinnedPosition();
         const up = this.getLocalUp();
@@ -168,6 +200,14 @@ export class XSpear extends Component {
             pinned.x + up.x * this.spearLength,
             pinned.y + up.y * this.spearLength,
         );
+    }
+
+    public getFreeEndBoardPosition(): Vec2 {
+        if (!this._board) {
+            return this.getFreeEndPosition();
+        }
+
+        return this._board.fromNodePoint(this.getFreeEndPosition(), this.node.parent);
     }
 
     public getHeadPosition(): Vec2 {
@@ -202,7 +242,12 @@ export class XSpear extends Component {
         this._stuckUpDirection.set(inwardDir.x, inwardDir.y).normalize();
         const angleDeg = math.toDegree(Math.atan2(-inwardDir.x, inwardDir.y));
         this.node.angle = angleDeg;
-        this.node.setPosition(edgePoint.x, edgePoint.y, 0);
+        if (this._board) {
+            const parentSpacePoint = this._board.toNodePoint(edgePoint, this.node.parent);
+            this.node.setPosition(parentSpacePoint.x, parentSpacePoint.y, parentSpacePoint.z);
+        } else {
+            this.node.setPosition(edgePoint.x, edgePoint.y, 0);
+        }
         this.changeState<XSpearIdleState>(XSpearStateId.Idle, [this.getAnim(XSpearStateId.Idle)]);
     }
 
@@ -211,7 +256,7 @@ export class XSpear extends Component {
             return;
         }
 
-        const currentPosition = this.getPinnedPosition();
+        const currentPosition = this.getPinnedBoardPosition();
         const currentUp = this.getLocalUp().normalize();
         const edgeNormal = this.detectEdgeNormal(this._board.clampPoint(currentPosition));
 
@@ -228,9 +273,11 @@ export class XSpear extends Component {
         if (this.state !== XSpearStateId.Idle || !this._board) {
             return;
         }
+        this.compressAu?.play();
 
         this.changeState<XSpearChargingState>(XSpearStateId.Charging, [this.getAnim(XSpearStateId.Charging)]);
-        this.aimAt(touchPos);
+        this.aimDirectAt(touchPos);
+        this.beginDrag(touchPos);
     }
 
     public aimAt(touchPos: Vec2): void {
@@ -239,28 +286,30 @@ export class XSpear extends Component {
         }
 
         const pinnedPos = this.getPinnedPosition();
-        let direction = touchPos.clone().subtract(pinnedPos);
-        if (direction.lengthSqr() < 0.0001) {
+        const touchDelta = touchPos.clone().subtract(this._dragTouchStart);
+        if (this.shouldRebaseDrag(touchDelta)) {
+            this.rebaseDrag(touchPos);
             return;
         }
 
-        direction = direction.normalize();
-        if (!this.isDirectionValid(direction)) {
+        const direction = this.getDragDirection(touchDelta, pinnedPos);
+        if (!direction || !this.isDirectionValid(direction)) {
             return;
         }
 
-        this._chargeDir.set(direction.x, direction.y);
-
-        const angleDeg = math.toDegree(Math.atan2(-direction.x, direction.y));
-        this.node.angle = angleDeg;
+        this.applyAimDirection(direction);
+        this._lastDragTouchDelta.set(touchDelta.x, touchDelta.y);
     }
 
     public release(): void {
         if (this.state !== XSpearStateId.Charging || !this._board) {
             return;
         }
+        this.shootAu?.play();
 
+        this.resetDragState();
         this._flyDirection.set(this._chargeDir.x, this._chargeDir.y);
+        this.beginFlightMotion();
         this.changeState<XSpearFlyingState>(XSpearStateId.Flying, [this.getAnim(XSpearStateId.Flying)]);
     }
 
@@ -313,7 +362,7 @@ export class XSpear extends Component {
             return undefined;
         }
 
-        const moveDistance = this.flySpeed * dt;
+        const moveDistance = this.getFlightMoveDistance(dt);
         const pos = this.node.getPosition();
         this.node.setPosition(
             pos.x + this._flyDirection.x * moveDistance,
@@ -321,13 +370,14 @@ export class XSpear extends Component {
             0,
         );
 
-        const freeEnd = this.getFreeEndPosition();
+        const freeEnd = this.getFreeEndBoardPosition();
         if (!this._board.containsPoint(freeEnd)) {
             const clampedFreeEnd = this._board.clampPoint(freeEnd);
             const normal = this.detectEdgeNormal(clampedFreeEnd);
             this._pinnedEdgeNormal.set(normal.x, normal.y);
             this.node.angle += 180;
-            this.node.setPosition(clampedFreeEnd.x, clampedFreeEnd.y, 0);
+            const parentSpacePoint = this._board.toNodePoint(clampedFreeEnd, this.node.parent);
+            this.node.setPosition(parentSpacePoint.x, parentSpacePoint.y, parentSpacePoint.z);
             const stuckUp = this.getLocalUp();
             this._stuckUpDirection.set(stuckUp.x, stuckUp.y).normalize();
             this.changeState<XSpearIdleState, XSpearFlyingState>(
@@ -344,15 +394,44 @@ export class XSpear extends Component {
     }
 
     public checkCollisionWithCircle(center: Vec2, radius: number): boolean {
-        const p1 = this.getPinnedPosition();
-        const p2 = this.getFreeEndPosition();
+        const p1 = this.getPinnedBoardPosition();
+        const p2 = this.getFreeEndBoardPosition();
         return this.pointToSegmentDistance(center, p1, p2) <= radius;
     }
 
     public checkCollisionWithZone(zone: CollisionZone): boolean {
-        const p1 = this.getPinnedPosition();
-        const p2 = this.getFreeEndPosition();
+        const p1 = this.getPinnedBoardPosition();
+        const p2 = this.getFreeEndBoardPosition();
         return this.segmentIntersectsRect(p1, p2, zone.getBoardRect());
+    }
+
+    public captureIgnoredCollisionZones(enemies: XEnemy[]): void {
+        this._ignoredCollisionZoneIds.clear();
+
+        for (const enemy of enemies) {
+            if (enemy.stateMachine.cid === null) {
+                continue;
+            }
+
+            this.captureIgnoredCollisionZone(enemy.bodyZone);
+            this.captureIgnoredCollisionZone(enemy.balloonZone);
+        }
+    }
+
+    public refreshIgnoredCollisionZones(enemies: XEnemy[]): void {
+        if (this._ignoredCollisionZoneIds.size <= 0) {
+            return;
+        }
+
+        for (const enemy of enemies) {
+            this.refreshIgnoredCollisionZone(enemy.bodyZone);
+            this.refreshIgnoredCollisionZone(enemy.balloonZone);
+        }
+    }
+
+    public shouldIgnoreCollisionZone(zone: CollisionZone | null): boolean {
+        const zoneId = zone?.node?.uuid;
+        return !!zoneId && this._ignoredCollisionZoneIds.has(zoneId);
     }
 
     public getTouchLocal(event: EventTouch, targetNode: Node): Vec2 {
@@ -380,11 +459,182 @@ export class XSpear extends Component {
         if (Math.abs(point.y - this._board.maxY) < eps) return new Vec2(0, -1);
         if (Math.abs(point.x - this._board.minX) < eps) return new Vec2(1, 0);
         if (Math.abs(point.x - this._board.maxX) < eps) return new Vec2(-1, 0);
-        return new Vec2(0, 1);
+
+        const distances = [
+            { normal: new Vec2(0, 1), distance: Math.abs(point.y - this._board.minY) },
+            { normal: new Vec2(0, -1), distance: Math.abs(point.y - this._board.maxY) },
+            { normal: new Vec2(1, 0), distance: Math.abs(point.x - this._board.minX) },
+            { normal: new Vec2(-1, 0), distance: Math.abs(point.x - this._board.maxX) },
+        ];
+
+        distances.sort((a, b) => a.distance - b.distance);
+        return distances[0].normal;
     }
 
     protected isDirectionValid(direction: Vec2): boolean {
         return this.isDirectionAngleValid(direction) && this.isDirectionInsideBoard(direction);
+    }
+
+    protected aimDirectAt(touchPos: Vec2): void {
+        const pinnedPos = this.getPinnedPosition();
+        const direction = touchPos.clone().subtract(pinnedPos);
+        if (direction.lengthSqr() < 0.0001) {
+            return;
+        }
+
+        direction.normalize();
+        if (!this.isDirectionValid(direction)) {
+            return;
+        }
+
+        this.applyAimDirection(direction);
+    }
+
+    protected beginDrag(touchPos: Vec2): void {
+        this._dragTouchStart.set(touchPos.x, touchPos.y);
+        const freeEnd = this.getFreeEndPosition();
+        this._dragFreeEndStart.set(freeEnd.x, freeEnd.y);
+        this.resetDragState();
+    }
+
+    protected resetDragState(): void {
+        this._lastDragRotationDirection = 0;
+        this._lastDragTouchDelta.set(0, 0);
+    }
+
+    protected shouldRebaseDrag(touchDelta: Vec2): boolean {
+        const rebaseEpsilon = 0.0005;
+        const xFlip = Math.abs(touchDelta.x) > rebaseEpsilon
+            && Math.abs(this._lastDragTouchDelta.x) > rebaseEpsilon
+            && Math.sign(touchDelta.x) !== Math.sign(this._lastDragTouchDelta.x);
+        const yFlip = Math.abs(touchDelta.y) > rebaseEpsilon
+            && Math.abs(this._lastDragTouchDelta.y) > rebaseEpsilon
+            && Math.sign(touchDelta.y) !== Math.sign(this._lastDragTouchDelta.y);
+        if (xFlip || yFlip) {
+            return true;
+        }
+
+        const direction = this.getDragDirection(touchDelta, this.getPinnedPosition());
+        if (!direction) {
+            return false;
+        }
+
+        const targetAngle = math.toDegree(Math.atan2(-direction.x, direction.y));
+        const desiredDelta = this.deltaAngle(this.node.angle, targetAngle);
+        if (Math.abs(desiredDelta) <= 0.0001) {
+            return false;
+        }
+
+        const desiredDirection = Math.sign(desiredDelta);
+        const didFlipRotationDirection = this._lastDragRotationDirection !== 0
+            && desiredDirection !== this._lastDragRotationDirection;
+        if (didFlipRotationDirection) {
+            return true;
+        }
+
+        this._lastDragRotationDirection = desiredDirection;
+        return false;
+    }
+
+    protected rebaseDrag(touchPos: Vec2): void {
+        this._dragTouchStart.set(touchPos.x, touchPos.y);
+        const freeEnd = this.getFreeEndPosition();
+        this._dragFreeEndStart.set(freeEnd.x, freeEnd.y);
+        this.resetDragState();
+    }
+
+    protected getDragDirection(touchDelta: Vec2, pinnedPos: Vec2): Vec2 | null {
+        const targetFreeEnd = this._dragFreeEndStart.clone().add(touchDelta);
+        const direction = targetFreeEnd.subtract(pinnedPos);
+        if (direction.lengthSqr() < 0.0001) {
+            return null;
+        }
+
+        direction.normalize();
+        return direction;
+    }
+
+    protected applyAimDirection(direction: Vec2): void {
+        this._chargeDir.set(direction.x, direction.y);
+        this.node.angle = math.toDegree(Math.atan2(-direction.x, direction.y));
+    }
+
+    protected beginFlightMotion(): void {
+        this._flightDistance = Math.max(0, this.computeFlightDistance());
+        this._flightProgress = 0;
+        this._flightScaleElapsed = 0;
+    }
+
+    protected computeFlightDistance(): number {
+        if (!this._board || this._flyDirection.lengthSqr() < 0.0001) {
+            return 0;
+        }
+
+        const freeEnd = this.getFreeEndBoardPosition();
+        const target = this._board.raycastToEdge(freeEnd, this._flyDirection);
+        if (!target) {
+            return 0;
+        }
+
+        return Vec2.distance(freeEnd, target);
+    }
+
+    protected getFlightMoveDistance(dt: number): number {
+        const speedScale = this.evaluateFlightSpeedScale(dt);
+        const linearDistance = this.flySpeed * speedScale * dt;
+        if (linearDistance <= 0 || this._flightDistance <= 0) {
+            return linearDistance;
+        }
+
+        const previousProgress = this._flightProgress;
+        this._flightProgress = math.clamp01(previousProgress + linearDistance / this._flightDistance);
+        const previousCurve = this.evaluateFlightEasing(previousProgress);
+        const currentCurve = this.evaluateFlightEasing(this._flightProgress);
+        const easedDistance = this._flightDistance * Math.max(0, currentCurve - previousCurve);
+        return easedDistance > 0 ? easedDistance : linearDistance;
+    }
+
+    protected evaluateFlightEasing(ratio: number): number {
+        const curve = easing[this.flyEasing];
+        const progress = math.clamp01(ratio);
+        return curve ? math.clamp01(curve(progress)) : progress;
+    }
+
+    protected evaluateFlightSpeedScale(dt: number): number {
+        const startScale = Math.max(0, this.flyScale);
+        if (Math.abs(startScale - 1) <= 0.0001) {
+            return 1;
+        }
+
+        const duration = Math.max(0, this.flyScaleDuration);
+        if (duration <= 0) {
+            return 1;
+        }
+
+        this._flightScaleElapsed += dt;
+        const ratio = math.clamp01(this._flightScaleElapsed / duration);
+        const curve = easing[this.flyScaleEasing];
+        const easedRatio = curve ? math.clamp01(curve(ratio)) : ratio;
+        return math.lerp(startScale, 1, easedRatio);
+    }
+
+    protected captureIgnoredCollisionZone(zone: CollisionZone | null): void {
+        if (!zone?.node?.active || !this.checkCollisionWithZone(zone)) {
+            return;
+        }
+
+        this._ignoredCollisionZoneIds.add(zone.node.uuid);
+    }
+
+    protected refreshIgnoredCollisionZone(zone: CollisionZone | null): void {
+        const zoneId = zone?.node?.uuid;
+        if (!zoneId || !this._ignoredCollisionZoneIds.has(zoneId)) {
+            return;
+        }
+
+        if (!zone.node.active || !this.checkCollisionWithZone(zone)) {
+            this._ignoredCollisionZoneIds.delete(zoneId);
+        }
     }
 
     protected isDirectionAngleValid(direction: Vec2): boolean {
@@ -401,7 +651,7 @@ export class XSpear extends Component {
     }
 
     protected getHeadPositionForDirection(direction: Vec2): Vec2 {
-        const pinned = this.getPinnedPosition();
+        const pinned = this.getPinnedBoardPosition();
         const angle = Math.atan2(-direction.x, direction.y);
         const headOffset = this.getHeadLocalOffset();
         const cos = Math.cos(angle);
@@ -410,6 +660,17 @@ export class XSpear extends Component {
             pinned.x + headOffset.x * cos - headOffset.y * sin,
             pinned.y + headOffset.x * sin + headOffset.y * cos,
         );
+    }
+
+    protected deltaAngle(current: number, target: number): number {
+        let delta = (target - current) % 360;
+        if (delta > 180) {
+            delta -= 360;
+        } else if (delta < -180) {
+            delta += 360;
+        }
+
+        return delta;
     }
 
     protected pointToSegmentDistance(point: Vec2, segA: Vec2, segB: Vec2): number {

@@ -17,6 +17,7 @@ export type XGameLaserHit = {
 };
 
 export type XGameBridgeRuntime = {
+    captureSpearLaunchOverlaps(spear: XSpear): void;
     findSpearHit(spear: XSpear): XSpearHitResult;
     findGroundZoneForEnemy(enemy: XEnemy): CollisionZone | null;
     getBoard(): GameBoard | null;

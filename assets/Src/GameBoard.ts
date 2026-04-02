@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, UITransform, Vec2, Vec3, Rect } from 'cc';
+import { _decorator, Component, Mat4, Node, UITransform, Vec2, Vec3, Rect } from 'cc';
 import { CollisionZone } from './CollisionZone';
 const { ccclass, property } = _decorator;
 
@@ -9,6 +9,8 @@ export class GameBoard extends Component {
 
     private _bounds: Rect = new Rect();
     private _uiTransform: UITransform = null;
+    private readonly _worldMatrix: Mat4 = new Mat4();
+    private readonly _inverseWorldMatrix: Mat4 = new Mat4();
 
     public get bounds(): Rect {
         return this._bounds;
@@ -21,12 +23,13 @@ export class GameBoard extends Component {
     public get width(): number { return this._bounds.width; }
     public get height(): number { return this._bounds.height; }
 
-    start() {
+    onLoad() {
         this._uiTransform = this.node.getComponent(UITransform);
         this.updateBounds();
     }
 
     public updateBounds() {
+        this._uiTransform ??= this.node.getComponent(UITransform);
         if (!this._uiTransform) return;
         const w = this._uiTransform.width;
         const h = this._uiTransform.height;
@@ -37,6 +40,45 @@ export class GameBoard extends Component {
         this._bounds.y = -h * anchorY;
         this._bounds.width = w;
         this._bounds.height = h;
+    }
+
+    public toBoardPoint(worldPoint: Readonly<Vec2> | Readonly<Vec3>): Vec2 {
+        const source = worldPoint instanceof Vec3
+            ? worldPoint
+            : new Vec3(worldPoint.x, worldPoint.y, 0);
+        this.node.getWorldMatrix(this._worldMatrix);
+        Mat4.invert(this._inverseWorldMatrix, this._worldMatrix);
+        const local = Vec3.transformMat4(new Vec3(), source, this._inverseWorldMatrix);
+        return new Vec2(local.x, local.y);
+    }
+
+    public toWorldPoint(boardPoint: Readonly<Vec2> | Readonly<Vec3>): Vec3 {
+        const source = boardPoint instanceof Vec3
+            ? boardPoint
+            : new Vec3(boardPoint.x, boardPoint.y, 0);
+        this.node.getWorldMatrix(this._worldMatrix);
+        return Vec3.transformMat4(new Vec3(), source, this._worldMatrix);
+    }
+
+    public toNodePoint(boardPoint: Readonly<Vec2> | Readonly<Vec3>, targetNode: Node | null): Vec3 {
+        const world = this.toWorldPoint(boardPoint);
+        if (!targetNode) {
+            return world;
+        }
+
+        return targetNode.inverseTransformPoint(new Vec3(), world);
+    }
+
+    public fromNodePoint(point: Readonly<Vec2> | Readonly<Vec3>, sourceNode: Node | null): Vec2 {
+        const source = point instanceof Vec3
+            ? point
+            : new Vec3(point.x, point.y, 0);
+        let world = source;
+        if (sourceNode) {
+            sourceNode.getWorldMatrix(this._worldMatrix);
+            world = Vec3.transformMat4(new Vec3(), source, this._worldMatrix);
+        }
+        return this.toBoardPoint(world);
     }
 
     /** Clamp a point inside the board */

@@ -1,18 +1,13 @@
-import { _decorator, Component, game, Game, director, Enum, math } from "cc";
+import { _decorator, Component, game, Game, director, Enum, math, easing } from "cc";
 import XGameObserver from "./XGameObserver";
+import { TweenEasing } from "cc";
+import Easing from "./Easing";
 
 const { ccclass, property } = _decorator;
 
-enum EffectEase {
-    Linear = 0,
-    InQuad,
-    OutQuad,
-    InOutQuad,
-}
 
-Enum(EffectEase);
+var timeScale =1;
 
-var timeScale = 1;
 
 //@ts-ignore
 game._calculateDT = function(now: number) {
@@ -34,8 +29,8 @@ export class XEffectManager extends Component {
     @property({ tooltip: "Whole slow motion duration in seconds." })
     public slowMotionDuration: number = 1.2;
 
-    @property({ type: EffectEase, tooltip: "Easing used for the slow motion curve." })
-    public ease: EffectEase = EffectEase.OutQuad;
+    //@property({ type: Easing })
+    public ease: TweenEasing = 'linear';
 
     protected _elapsed: number = 0;
     protected _isPlaying: boolean = false;
@@ -61,7 +56,9 @@ export class XEffectManager extends Component {
         this._elapsed += dt;
         const ratio = math.clamp01(this._elapsed / duration);
         const phaseRatio = ratio <= 0.5 ? ratio / 0.5 : (ratio - 0.5) / 0.5;
-        const curve = this.evaluateEase(math.clamp01(phaseRatio));
+        const _efunc = easing[this.ease];
+        const curve = _efunc ? _efunc(phaseRatio) : phaseRatio;// this.evaluateEase(math.clamp01(phaseRatio));
+        console.log(curve)
         const targetScale = ratio <= 0.5
             ? math.lerp(1, this.slowScale, curve)
             : math.lerp(this.slowScale, 1, curve);
@@ -78,22 +75,6 @@ export class XEffectManager extends Component {
         this._elapsed = 0;
         this._isPlaying = true;
         this.setTimeScale(1);
-    }
-
-    protected evaluateEase(ratio: number): number {
-        switch (this.ease) {
-            case EffectEase.InQuad:
-                return ratio * ratio;
-            case EffectEase.OutQuad:
-                return 1 - (1 - ratio) * (1 - ratio);
-            case EffectEase.InOutQuad:
-                return ratio < 0.5
-                    ? 2 * ratio * ratio
-                    : 1 - Math.pow(-2 * ratio + 2, 2) / 2;
-            case EffectEase.Linear:
-            default:
-                return ratio;
-        }
     }
 
     protected setTimeScale(value: number): void {

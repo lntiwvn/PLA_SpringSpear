@@ -8,6 +8,7 @@ export class XSpearFlyingState implements IState<XSpear, [string], []> {
         context.clearLaser();
         context.clearLaserTarget();
         context.playAnimation(animationName, true);
+        XGameBridge.get()?.captureSpearLaunchOverlaps(context);
         XGameObserver.invoke("onSpearFly", context);
     }
 
