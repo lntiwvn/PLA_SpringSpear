@@ -13,7 +13,6 @@ export class EverySec extends Component {
     @property({ min: 0 })
     dur: number = 5;
 
-    @property({ visible: true, displayName: "Active" })
     protected _a: boolean = false;
     active() {
         this._a = true;
@@ -28,10 +27,10 @@ export class EverySec extends Component {
         this._func = this._re.bind(this)
     }
 
-    protected _re() {
-        if(!this._a) return;
-        this.nodes.forEach(_ => _.active = true)
-    }
+        protected _re() {
+            if(!this._a) return;
+            this.nodes.forEach(_ => _.active = true)
+        }
 
     protected _func: Function
     protected _stop() {

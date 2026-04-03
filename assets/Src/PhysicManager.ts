@@ -1,7 +1,3 @@
-import { director } from "cc";
-import { RigidBody2D } from "cc";
-import { Collider2D } from "cc";
-import { view } from "cc";
 import { _decorator, Component, EPhysics2DDrawFlags, PhysicsSystem2D, Vec2, warn } from "cc";
 
 const { ccclass, property } = _decorator;
@@ -18,9 +14,6 @@ export class PhysicManager extends Component {
 
     @property({ type: Vec2, tooltip: "Global gravity used by PhysicsSystem2D and custom falling states." })
     public gravity: Vec2 = new Vec2(0, -980);
-
-    @property({})
-    syncOnResize: boolean = true
 
     public static get instance(): PhysicManager | null {
         return this._instance;
@@ -49,15 +42,6 @@ export class PhysicManager extends Component {
 
         PhysicManager._instance = this;
         this.applySettings();
-
-        if(this.syncOnResize) {
-            view.on('canvas-resize', this._sync, this)
-        }
-    }
-
-    protected _sync() {
-        const _cs = director.getScene().getComponentsInChildren(Collider2D);
-        _cs.forEach(_ => _.apply())
     }
 
     protected start(): void {
