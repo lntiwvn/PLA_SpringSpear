@@ -12,6 +12,7 @@ import { XSpearChargingState } from "./XSpearChargingState";
 import { XSpearFlyingState } from "./XSpearFlyingState";
 import { XSpearIdleState } from "./XSpearIdleState";
 import { AudioSource } from "cc";
+import { ReflectionSpear } from "./ReflectionSpear";
 
 const { ccclass, property, executeInEditMode } = _decorator;
 
@@ -102,6 +103,8 @@ export class XSpear extends Component {
     protected _flightDistance: number = 0;
     protected _flightProgress: number = 0;
     protected _flightScaleElapsed: number = 0;
+    protected _skipInitializeStateFromPoseOnInit: boolean = false;
+    protected _pendingInitStateId: XSpearStateId | null = null;
     protected readonly _previousHeadWorldPosition: Vec3 = new Vec3();
     protected readonly _ignoredColliderIds: Set<string> = new Set();
     protected _map: Record<XSpearStateId, string> = {
@@ -132,10 +135,18 @@ export class XSpear extends Component {
         if (!this.visual) {
             this.visual = this.getComponentInChildren(sp.Skeleton);
         }
-        this._map = this.selectors.reduce((_current, _selector) => {
-            _current[_selector.id] = _selector.anim;
-            return _current;
-        }, {} as Record<XSpearStateId, string>);
+        if (!this._skipInitializeStateFromPoseOnInit) {
+            const selectors = this.selectors ?? [];
+            const mapped = selectors.reduce((_current, _selector) => {
+                _current[_selector.id] = _selector.anim;
+                return _current;
+            }, {} as Record<XSpearStateId, string>);
+            this._map = {
+                [XSpearStateId.Idle]: mapped[XSpearStateId.Idle] ?? this._map[XSpearStateId.Idle],
+                [XSpearStateId.Charging]: mapped[XSpearStateId.Charging] ?? this._map[XSpearStateId.Charging],
+                [XSpearStateId.Flying]: mapped[XSpearStateId.Flying] ?? this._map[XSpearStateId.Flying],
+            };
+        }
         !EDITOR && delete this.selectors;
 
         this._stateMachine
@@ -166,6 +177,15 @@ export class XSpear extends Component {
     public init(board: GameBoard): void {
         this._board = board;
         this.setSpearColliderEnabled(false);
+        if (this._skipInitializeStateFromPoseOnInit) {
+            const nextState = this._pendingInitStateId ?? XSpearStateId.Flying;
+            this._skipInitializeStateFromPoseOnInit = false;
+            this._pendingInitStateId = null;
+            this._didInitializeState = true;
+            this.syncCollider();
+            this.enterState(nextState, [this.getAnim(nextState)]);
+            return;
+        }
         this.initializeStateFromCurrentPose();
     }
 
@@ -299,6 +319,13 @@ export class XSpear extends Component {
         this.changeState(this.defaultState, [this.getAnim(this.defaultState)]);
     }
 
+    protected onEnable(): void {
+        const _brige = XGameBridge.get()
+        if(!_brige || EDITOR) return;
+
+        _brige.addSpear(this);
+        console.log("Spear Enable", this)
+    }
 
     public startCharge(touchPos: Vec2): void {
         if (this.state !== XSpearStateId.Idle || !this._board) {
@@ -360,17 +387,73 @@ export class XSpear extends Component {
         return this._flyDirection.clone();
     }
 
+    public launchCloneFrom(source: XSpear, direction: Vec2): void {
+        if (!source || direction.lengthSqr() <= 0.0001) {
+            return;
+        }
+
+        const normalizedDirection = direction.clone().normalize();
+        this._pinnedEdgeNormal.set(source._pinnedEdgeNormal.x, source._pinnedEdgeNormal.y);
+        this._stuckUpDirection.set(source._stuckUpDirection.x, source._stuckUpDirection.y);
+        this._chargeDir.set(normalizedDirection.x, normalizedDirection.y);
+        this._flyDirection.set(normalizedDirection.x, normalizedDirection.y);
+        this._flightDistance = source._flightDistance;
+        this._flightProgress = source._flightProgress;
+        this._flightScaleElapsed = source._flightScaleElapsed;
+        this.resetDragState();
+        this.node.angle = math.toDegree(Math.atan2(-normalizedDirection.x, normalizedDirection.y));
+        this.syncCollider();
+        this.changeState<XSpearFlyingState>(XSpearStateId.Flying, [this.getAnim(XSpearStateId.Flying)]);
+    }
+
+    public prepareCloneInitFrom(source: XSpear, direction: Vec2): void {
+        if (!source || direction.lengthSqr() <= 0.0001) {
+            return;
+        }
+
+        const normalizedDirection = direction.clone().normalize();
+        this._map = {
+            [XSpearStateId.Idle]: source._map[XSpearStateId.Idle],
+            [XSpearStateId.Charging]: source._map[XSpearStateId.Charging],
+            [XSpearStateId.Flying]: source._map[XSpearStateId.Flying],
+        };
+        this._pinnedEdgeNormal.set(source._pinnedEdgeNormal.x, source._pinnedEdgeNormal.y);
+        this._stuckUpDirection.set(source._stuckUpDirection.x, source._stuckUpDirection.y);
+        this._chargeDir.set(normalizedDirection.x, normalizedDirection.y);
+        this._flyDirection.set(normalizedDirection.x, normalizedDirection.y);
+        this._flightDistance = source._flightDistance;
+        this._flightProgress = source._flightProgress;
+        this._flightScaleElapsed = source._flightScaleElapsed;
+        this._ignoredColliderIds.clear();
+        this._pendingInitStateId = source.state;
+        this._skipInitializeStateFromPoseOnInit = true;
+        this._didInitializeState = true;
+        this.resetDragState();
+        this.node.angle = math.toDegree(Math.atan2(-normalizedDirection.x, normalizedDirection.y));
+        this.syncCollider();
+    }
+
+    protected enterState(stateId: XSpearStateId, enterArgs: any[] = []): void {
+        if (this.state !== stateId) {
+            this.changeState(stateId, enterArgs);
+            return;
+        }
+
+        this._stateMachine.cstate?.exit(this);
+        this._stateMachine.cstate?.enter(this, ...enterArgs);
+    }
+
     public updateLaser(): void {
         const origin = this.getHeadPosition();
         const direction = this._chargeDir.lengthSqr() > 0.0001 ? this._chargeDir.clone() : this.getLocalUp().normalize();
-        const hit = XGameBridge.get()?.castLaser(origin, direction);
-        if (!hit) {
+        const path = XGameBridge.get()?.castLaserPath(origin, direction);
+        if (!path) {
             this.clearLaser();
             this.clearLaserTarget();
             return;
         }
 
-        const nextTarget = hit.enemy;
+        const nextTarget = path.enemy;
         if (this._laserTarget && this._laserTarget !== nextTarget) {
             this._laserTarget.clearScare();
         }
@@ -380,7 +463,16 @@ export class XSpear extends Component {
             this._laserTarget.enterScare();
         }
 
-        this.drawLaser(origin, hit.point, nextTarget ? Color.GREEN : Color.RED);
+        const color = nextTarget ? Color.GREEN : Color.RED;
+        if (!path.reflectionPoint) {
+            this.drawLaser(origin, path.point, color);
+            return;
+        }
+
+        this.drawLaserPath([
+            { from: origin, to: path.reflectionPoint, color: Color.RED },
+            { from: path.reflectionPoint, to: path.point, color },
+        ]);
     }
 
     public clearLaser(): void {
@@ -406,27 +498,41 @@ export class XSpear extends Component {
         }
 
         const previousHeadWorld = this.getHeadWorldPosition();
+        const previousHeadBoard = this._board.toBoardPoint(previousHeadWorld);
         const moveDistance = this.getFlightMoveDistance(dt);
+        const reflectionHitAhead = XGameBridge.get()?.findReflectionHitForDirection(previousHeadBoard, this._flyDirection, moveDistance + 0.0001);
+        const wallHitAhead = this.getWallHitForDirection(previousHeadBoard, this._flyDirection, moveDistance + 0.0001);
+
+        let firstHitKind: "reflection" | "wall" | null = null;
+        let firstHitDistance = moveDistance;
+        if (reflectionHitAhead && reflectionHitAhead.distance < firstHitDistance) {
+            firstHitKind = "reflection";
+            firstHitDistance = reflectionHitAhead.distance;
+        }
+        if (wallHitAhead && wallHitAhead.distance < firstHitDistance) {
+            firstHitKind = "wall";
+            firstHitDistance = wallHitAhead.distance;
+        }
+        const travelDistance = Math.max(0, Math.min(moveDistance, firstHitDistance));
+
         const pos = this.node.getPosition();
         this.node.setPosition(
-            pos.x + this._flyDirection.x * moveDistance,
-            pos.y + this._flyDirection.y * moveDistance,
+            pos.x + this._flyDirection.x * travelDistance,
+            pos.y + this._flyDirection.y * travelDistance,
             0,
         );
         this.syncCollider();
-
-        const currentHeadWorld = this.getHeadWorldPosition();
-        const wallHit = this._board.findWallHit(previousHeadWorld, currentHeadWorld);
         this._previousHeadWorldPosition.set(previousHeadWorld.x, previousHeadWorld.y, previousHeadWorld.z);
-        if (wallHit) {
-            this.pinAtWallHit(wallHit.point, wallHit.normal);
-            return null;
+        if (firstHitKind === "reflection" && reflectionHitAhead) {
+            this.reflectFlightDirection(reflectionHitAhead.point, reflectionHitAhead.normal);
+            XGameBridge.get()?.tryCloneSpear(this);
+            return undefined;
         }
 
-        const currentHead = this.getHeadPosition();
-        const nearWallHit = this.getWallHitForDirection(currentHead, this._flyDirection, this.wallStickThreshold + 0.5);
-        if (nearWallHit && Vec2.distance(currentHead, nearWallHit.point) <= this.wallStickThreshold) {
-            this.pinAtWallHit(nearWallHit.point, nearWallHit.normal);
+        XGameBridge.get()?.tryCloneSpear(this);
+
+        if (firstHitKind === "wall" && wallHitAhead) {
+            this.pinAtWallHit(wallHitAhead.point, wallHitAhead.normal);
             return null;
         }
 
@@ -820,6 +926,23 @@ export class XSpear extends Component {
         this.laserGraphic.stroke();
     }
 
+    protected drawLaserPath(segments: { from: Vec2; to: Vec2; color: Color }[]): void {
+        if (!this.laserGraphic) {
+            return;
+        }
+
+        this.laserGraphic.clear();
+        this.laserGraphic.lineWidth = this.laserWidth;
+        for (const segment of segments) {
+            const fromLocal = this.convertBoardPointToGraphicLocal(segment.from);
+            const toLocal = this.convertBoardPointToGraphicLocal(segment.to);
+            this.laserGraphic.strokeColor = segment.color;
+            this.laserGraphic.moveTo(fromLocal.x, fromLocal.y);
+            this.laserGraphic.lineTo(toLocal.x, toLocal.y);
+            this.laserGraphic.stroke();
+        }
+    }
+
     protected convertBoardPointToGraphicLocal(point: Vec2): Vec2 {
         const boardNode = this._board?.node ?? this.node.parent;
         const graphicNode = this.laserGraphic?.node;
@@ -866,5 +989,42 @@ export class XSpear extends Component {
             [],
         );
         this.onPinned?.();
+    }
+
+    protected reflectFlightDirection(hitPoint: Vec2, normal: Vec2): void {
+        const hitWorld = this._board.toWorldPoint(hitPoint);
+        const currentHeadWorld = this.getHeadWorldPosition();
+        const worldCorrection = new Vec3(
+            hitWorld.x - currentHeadWorld.x,
+            hitWorld.y - currentHeadWorld.y,
+            hitWorld.z - currentHeadWorld.z,
+        );
+        const currentNodeWorld = this.node.worldPosition;
+        this.node.setWorldPosition(
+            currentNodeWorld.x + worldCorrection.x,
+            currentNodeWorld.y + worldCorrection.y,
+            currentNodeWorld.z + worldCorrection.z,
+        );
+
+        const reflectedDirection = ReflectionSpear.reflectDirection(this._flyDirection, normal);
+        this._flyDirection.set(reflectedDirection.x, reflectedDirection.y);
+        this._chargeDir.set(reflectedDirection.x, reflectedDirection.y);
+        this.node.angle = math.toDegree(Math.atan2(-reflectedDirection.x, reflectedDirection.y));
+
+        const pushedHeadBoard = hitPoint.clone().add(reflectedDirection.clone().multiplyScalar(0.5));
+        const pushedHeadWorld = this._board.toWorldPoint(pushedHeadBoard);
+        const alignedHeadWorld = this.getHeadWorldPosition();
+        const pushCorrection = new Vec3(
+            pushedHeadWorld.x - alignedHeadWorld.x,
+            pushedHeadWorld.y - alignedHeadWorld.y,
+            pushedHeadWorld.z - alignedHeadWorld.z,
+        );
+        const correctedNodeWorld = this.node.worldPosition;
+        this.node.setWorldPosition(
+            correctedNodeWorld.x + pushCorrection.x,
+            correctedNodeWorld.y + pushCorrection.y,
+            correctedNodeWorld.z + pushCorrection.z,
+        );
+        this.syncCollider();
     }
 }

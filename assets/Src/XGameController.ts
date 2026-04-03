@@ -1,9 +1,11 @@
-import { _decorator, Collider2D, Component, EventTouch, Node, Vec2, Vec3, UITransform } from "cc";
+import { _decorator, Collider2D, Component, ERaycast2DType, EventTouch, Node, PhysicsSystem2D, Vec2, Vec3, UITransform, v2 } from "cc";
 import { GameBoard } from "./GameBoard";
-import XGameBridge, { XEnemyHitData, XGameLaserHit } from "./XGameBridge";
+import XGameBridge, { XEnemyHitData, XGameLaserHit, XGameLaserPath, XGameReflectionHit } from "./XGameBridge";
 import { XEnemy, XEnemyStateId } from "./XEnemy";
 import XGameObserver from "./XGameObserver";
 import { XSpear, XSpearStateId } from "./XSpear";
+import { ReflectionSpear } from "./ReflectionSpear";
+import { ClonerSpear } from "./ClonerSpear";
 
 const { ccclass, property } = _decorator;
 
@@ -14,11 +16,20 @@ export class XGameController extends Component {
     @property(GameBoard)
     public gameBoard: GameBoard = null;
 
-    @property(XSpear)
-    public spear: XSpear = null;
+    @property(Node)
+    get enemyHolder() { return null }
+    set enemyHolder(x: Node) { 
+        if(!x) return;
+        const _es = x.getComponentsInChildren(XEnemy)
+        const _v = _es.filter(_ => !this.enemies.find(__ => __.uuid === _.uuid))
+        this.enemies.push(..._v)
+    }
 
     @property([XEnemy])
     public enemies: XEnemy[] = [];
+
+    @property({})
+    isAllowDrag: boolean = true;
 
     protected _observerDisposers: Array<() => void> = [];
     protected _didInvokeEveryEnemyDie: boolean = false;
@@ -32,13 +43,25 @@ export class XGameController extends Component {
         XGameBridge.set(this);
     }
 
-    protected start(): void {
-        this.spear.init(this.gameBoard);
+    protected _spear: Map<string, XSpear> = new Map();
 
-        this.gameBoard.node.on(Node.EventType.TOUCH_START, this.onTouchStart, this);
-        this.gameBoard.node.on(Node.EventType.TOUCH_MOVE, this.onTouchMove, this);
+    addSpear(spear: XSpear) {
+        if(!spear) return;
+
+        this._spear.set(spear.uuid, spear);
+        spear.init(this.gameBoard)
+    }
+
+    protected start(): void {
         this.gameBoard.node.on(Node.EventType.TOUCH_END, this.onTouchEnd, this);
-        this.gameBoard.node.on(Node.EventType.TOUCH_CANCEL, this.onTouchEnd, this);
+
+        if(this.isAllowDrag) {
+            this.gameBoard.node.on(Node.EventType.TOUCH_START, this.onTouchStart, this);
+            this.gameBoard.node.on(Node.EventType.TOUCH_MOVE, this.onTouchMove, this);
+            this.gameBoard.node.on(Node.EventType.TOUCH_CANCEL, this.onTouchEnd, this);
+        } else {
+            this.gameBoard.node.on(Node.EventType.TOUCH_START, this._onOneTouchStart, this);
+        }
 
         const onEnemyDead = this.onEnemyDead.bind(this);
         const onEnemyFalling = this.onEnemyFalling.bind(this);
@@ -53,12 +76,19 @@ export class XGameController extends Component {
         ];
     }
 
+    protected _onOneTouchStart() {
+        for(const _sp of this._spear.values()) {
+            _sp.startCharge(_sp.getLocalUp());
+        }
+    }
+
     protected onDestroy(): void {
         this._observerDisposers.forEach((_dispose) => _dispose());
         this._observerDisposers.length = 0;
 
         if (this.gameBoard?.node) {
             this.gameBoard.node.off(Node.EventType.TOUCH_START, this.onTouchStart, this);
+            this.gameBoard.node.off(Node.EventType.TOUCH_START, this._onOneTouchStart, this);
             this.gameBoard.node.off(Node.EventType.TOUCH_MOVE, this.onTouchMove, this);
             this.gameBoard.node.off(Node.EventType.TOUCH_END, this.onTouchEnd, this);
             this.gameBoard.node.off(Node.EventType.TOUCH_CANCEL, this.onTouchEnd, this);
@@ -71,27 +101,24 @@ export class XGameController extends Component {
     }
 
     protected onTouchStart(event: EventTouch): void {
-        if (this.spear.state !== XSpearStateId.Idle) {
-            return;
+        const _t = this.getTouchLocal(event);
+        for(const _sp of this._spear.values()) {
+            _sp.startCharge(_t);
         }
-
-        this.spear.startCharge(this.getTouchLocal(event));
     }
 
     protected onTouchMove(event: EventTouch): void {
-        if (this.spear.state !== XSpearStateId.Charging) {
-            return;
+        const _t = this.getTouchLocal(event);
+        const _w = event.getUILocation();
+        for(const _sp of this._spear.values()) {
+            _sp.aimAt(_t, _w);
         }
-
-        this.spear.aimAt(this.getTouchLocal(event), event.getUILocation());
     }
 
     protected onTouchEnd(): void {
-        if (this.spear.state !== XSpearStateId.Charging) {
-            return;
+        for(const _sp of this._spear.values()) {
+            _sp.release();
         }
-
-        this.spear.release();
     }
 
     protected getTouchLocal(event: EventTouch): Vec2 {
@@ -124,6 +151,49 @@ export class XGameController extends Component {
 
     public captureSpearLaunchOverlaps(spear: XSpear): void {
         spear.captureIgnoredColliders(this.enemies);
+    }
+
+    public tryCloneSpear(spear: XSpear): void {
+        if (!spear || spear.state !== XSpearStateId.Flying) {
+            return;
+        }
+
+        const previousHeadBoard = this.gameBoard.toBoardPoint(spear.getPreviousHeadWorldPosition());
+        const currentHeadBoard = spear.getHeadPosition();
+        console.log("[XGameController] BEFORE Try Get ActiveCloners >>>", ClonerSpear.getActiveCloners())
+        for (const cloner of ClonerSpear.getActiveCloners()) {
+            console.log("[XGameController] Try Get ActiveCloners >>>", cloner)
+            const collider = cloner.getCollider();
+            if (!collider) {
+                continue;
+            }
+
+            const hit = this.findSegmentRectHit(
+                previousHeadBoard,
+                currentHeadBoard,
+                this.getColliderBoardRect(collider),
+            );
+            console.log("Found hit", hit)
+            if (!hit) {
+                continue;
+            }
+
+            const hitWorld = this.gameBoard.toWorldPoint(hit.point);
+            cloner.tryCloneBySpear(spear, hitWorld);
+        }
+    }
+
+    public findReflectionHitForDirection(origin: Vec2, direction: Vec2, maxDistance: number): XGameReflectionHit | null {
+        const hit = this.findReflectionHit(origin, direction, maxDistance);
+        if (!hit) {
+            return null;
+        }
+
+        return {
+            point: hit.point,
+            normal: hit.normal,
+            distance: hit.distance,
+        };
     }
 
     public findGroundColliderForEnemy(enemy: XEnemy): Collider2D | null {
@@ -160,7 +230,7 @@ export class XGameController extends Component {
     }
 
     public castLaser(origin: Vec2, direction: Vec2): XGameLaserHit | null {
-        const boardHit = this.gameBoard?.raycastWall(origin, direction);
+        const boardHit = this.findClosestBoardHit(origin, direction, true);
         if (!boardHit) {
             return null;
         }
@@ -188,27 +258,51 @@ export class XGameController extends Component {
             }
         }
 
-        for (const boardCollider of [...(this.gameBoard.walls ?? []), ...(this.gameBoard.grounds ?? [])]) {
-            if (!boardCollider?.enabledInHierarchy) {
-                continue;
-            }
+        return closestHit;
+    }
 
-            const hitPoint = this.raycastBoardRect(origin, direction, this.getColliderBoardRect(boardCollider));
-            if (!hitPoint) {
-                continue;
-            }
-
-            const distance = Vec2.distance(origin, hitPoint);
-            if (distance < closestDistance) {
-                closestDistance = distance;
-                closestHit = {
-                    enemy: null,
-                    point: hitPoint,
-                };
-            }
+    public castLaserPath(origin: Vec2, direction: Vec2): XGameLaserPath | null {
+        const directHit = this.castLaser(origin, direction);
+        if (!directHit) {
+            return null;
         }
 
-        return closestHit;
+        const reflectionHit = this.findReflectionHit(origin, direction);
+        const directDistance = Vec2.distance(origin, directHit.point);
+        if (!reflectionHit || directDistance <= reflectionHit.distance + 0.0001) {
+            return {
+                enemy: directHit.enemy,
+                point: directHit.point,
+                reflectionPoint: null,
+            };
+        }
+
+        const reflectedDirection = ReflectionSpear.reflectDirection(direction, reflectionHit.normal);
+        const reflectedOrigin = reflectionHit.point.clone().add(reflectedDirection.clone().multiplyScalar(0.5));
+        const reflectedHit = this.castLaser(reflectedOrigin, reflectedDirection);
+        if (!reflectedHit) {
+            return {
+                enemy: directHit.enemy,
+                point: directHit.point,
+                reflectionPoint: null,
+            };
+        }
+
+        return {
+            enemy: reflectedHit.enemy,
+            point: reflectedHit.point,
+            reflectionPoint: reflectionHit.point,
+        };
+    }
+
+    public findReflectionHitAlongSegment(from: Vec2, to: Vec2): XGameReflectionHit | null {
+        const direction = to.clone().subtract(from);
+        const maxDistance = direction.length();
+        if (maxDistance <= 0.0001) {
+            return null;
+        }
+
+        return this.findReflectionHit(from, direction, maxDistance + 0.0001);
     }
 
     protected findEnemyHitAlongSegmentBoard(from: Vec2, to: Vec2, spear: XSpear): { enemy: XEnemy; kind: "body" | "balloon" } | null {
@@ -252,13 +346,30 @@ export class XGameController extends Component {
     }
 
     protected raycastBoardRect(origin: Vec2, direction: Vec2, rect: { x: number; y: number; width: number; height: number }): Vec2 | null {
-        const dir = direction.clone().normalize();
-        if (dir.lengthSqr() <= 0.0001) {
+        const hit = this.raycastBoardRectHit(origin, direction, rect);
+        if (!hit) {
             return null;
         }
 
+        return hit.point;
+    }
+
+    protected raycastBoardRectHit(
+        origin: Vec2,
+        direction: Vec2,
+        rect: { x: number; y: number; width: number; height: number },
+        maxDistance: number = Number.POSITIVE_INFINITY,
+    ): { point: Vec2; normal: Vec2; distance: number } | null {
+        const dir = direction.clone();
+        if (dir.lengthSqr() <= 0.0001) {
+            return null;
+        }
+        dir.normalize();
+
         let tMin = -Infinity;
         let tMax = Infinity;
+        let minNormal = new Vec2();
+        let maxNormal = new Vec2();
 
         const minX = rect.x;
         const maxX = rect.x + rect.width;
@@ -272,8 +383,19 @@ export class XGameController extends Component {
         } else {
             const tx1 = (minX - origin.x) / dir.x;
             const tx2 = (maxX - origin.x) / dir.x;
-            tMin = Math.max(tMin, Math.min(tx1, tx2));
-            tMax = Math.min(tMax, Math.max(tx1, tx2));
+            const txMin = Math.min(tx1, tx2);
+            const txMax = Math.max(tx1, tx2);
+            const entryNormal = tx1 < tx2 ? new Vec2(-1, 0) : new Vec2(1, 0);
+            const exitNormal = tx1 < tx2 ? new Vec2(1, 0) : new Vec2(-1, 0);
+
+            if (txMin > tMin) {
+                tMin = txMin;
+                minNormal = entryNormal;
+            }
+            if (txMax < tMax) {
+                tMax = txMax;
+                maxNormal = exitNormal;
+            }
         }
 
         if (Math.abs(dir.y) < 0.0001) {
@@ -283,8 +405,19 @@ export class XGameController extends Component {
         } else {
             const ty1 = (minY - origin.y) / dir.y;
             const ty2 = (maxY - origin.y) / dir.y;
-            tMin = Math.max(tMin, Math.min(ty1, ty2));
-            tMax = Math.min(tMax, Math.max(ty1, ty2));
+            const tyMin = Math.min(ty1, ty2);
+            const tyMax = Math.max(ty1, ty2);
+            const entryNormal = ty1 < ty2 ? new Vec2(0, -1) : new Vec2(0, 1);
+            const exitNormal = ty1 < ty2 ? new Vec2(0, 1) : new Vec2(0, -1);
+
+            if (tyMin > tMin) {
+                tMin = tyMin;
+                minNormal = entryNormal;
+            }
+            if (tyMax < tMax) {
+                tMax = tyMax;
+                maxNormal = exitNormal;
+            }
         }
 
         if (tMax < 0 || tMin > tMax) {
@@ -295,8 +428,15 @@ export class XGameController extends Component {
         if (hitT < 0) {
             return null;
         }
+        if (hitT > maxDistance) {
+            return null;
+        }
 
-        return new Vec2(origin.x + dir.x * hitT, origin.y + dir.y * hitT);
+        return {
+            point: new Vec2(origin.x + dir.x * hitT, origin.y + dir.y * hitT),
+            normal: tMin >= 0 ? minNormal : maxNormal,
+            distance: hitT,
+        };
     }
 
     protected segmentIntersectsRect(segA: Vec2, segB: Vec2, rect: { x: number; y: number; width: number; height: number }): boolean {
@@ -349,6 +489,119 @@ export class XGameController extends Component {
             && point.x <= Math.max(a.x, b.x)
             && point.y >= Math.min(a.y, b.y)
             && point.y <= Math.max(a.y, b.y);
+    }
+
+    protected findReflectionHit(origin: Vec2, direction: Vec2, maxDistance: number = Number.POSITIVE_INFINITY): (XGameReflectionHit & { collider: Collider2D }) | null {
+        if (!this.gameBoard || direction.lengthSqr() <= 0.0001) {
+            return null;
+        }
+
+        const activeReflectionColliders = ReflectionSpear.getActiveColliders();
+        if (activeReflectionColliders.length <= 0) {
+            return null;
+        }
+
+        const reflectionIds = new Set(activeReflectionColliders.map((_collider) => _collider.uuid));
+        const normalizedDirection = direction.clone().normalize();
+        const maxDistanceSafe = Number.isFinite(maxDistance)
+            ? Math.max(0, maxDistance)
+            : Math.max(this.gameBoard.width, this.gameBoard.height) * 4;
+
+        const fromWorld = this.gameBoard.toWorldPoint(origin);
+        const toBoard = new Vec2(
+            origin.x + normalizedDirection.x * maxDistanceSafe,
+            origin.y + normalizedDirection.y * maxDistanceSafe,
+        );
+        const toWorld = this.gameBoard.toWorldPoint(toBoard);
+        const hits = PhysicsSystem2D.instance.raycast(
+            v2(fromWorld.x, fromWorld.y),
+            v2(toWorld.x, toWorld.y),
+            ERaycast2DType.AllClosest,
+        );
+        if (hits.length <= 0) {
+            return null;
+        }
+
+        let closestHit: (XGameReflectionHit & { collider: Collider2D }) | null = null;
+        for (const hit of hits) {
+            const collider = hit.collider;
+            if (!collider || !reflectionIds.has(collider.uuid)) {
+                continue;
+            }
+
+            const hitWorld = new Vec3(hit.point.x, hit.point.y, 0);
+            const hitBoard = this.gameBoard.toBoardPoint(hitWorld);
+            const distance = Vec2.distance(origin, hitBoard);
+            if (distance <= 0.0001 || distance > maxDistanceSafe + 0.0001) {
+                continue;
+            }
+
+            const normalWorldEnd = new Vec3(hit.point.x + hit.normal.x, hit.point.y + hit.normal.y, 0);
+            const normalBoardEnd = this.gameBoard.toBoardPoint(normalWorldEnd);
+            const normalBoard = normalBoardEnd.clone().subtract(hitBoard).normalize();
+            if (normalBoard.lengthSqr() <= 0.0001) {
+                continue;
+            }
+
+            if (!closestHit || distance < closestHit.distance) {
+                closestHit = {
+                    point: hitBoard,
+                    normal: normalBoard,
+                    distance,
+                    collider,
+                };
+            }
+        }
+
+        return closestHit;
+    }
+
+    protected findClosestBoardHit(
+        origin: Vec2,
+        direction: Vec2,
+        skipReflectionColliders: boolean,
+    ): { point: Vec2; distance: number } | null {
+        let closest: { point: Vec2; distance: number } | null = null;
+        for (const boardCollider of [...(this.gameBoard.walls ?? []), ...(this.gameBoard.grounds ?? [])]) {
+            if (!boardCollider?.enabledInHierarchy) {
+                continue;
+            }
+            if (skipReflectionColliders && this.isReflectionCollider(boardCollider)) {
+                continue;
+            }
+
+            const hit = this.raycastBoardRectHit(origin, direction, this.getColliderBoardRect(boardCollider));
+            if (!hit) {
+                continue;
+            }
+
+            if (!closest || hit.distance < closest.distance) {
+                closest = {
+                    point: hit.point,
+                    distance: hit.distance,
+                };
+            }
+        }
+
+        return closest;
+    }
+
+    protected findSegmentRectHit(
+        from: Vec2,
+        to: Vec2,
+        rect: { x: number; y: number; width: number; height: number },
+    ): { point: Vec2; normal: Vec2; distance: number } | null {
+        const direction = to.clone().subtract(from);
+        const maxDistance = direction.length();
+        if (maxDistance <= 0.0001) {
+            return null;
+        }
+
+        return this.raycastBoardRectHit(from, direction, rect, maxDistance + 0.0001);
+    }
+
+    protected isReflectionCollider(collider: Collider2D): boolean {
+        return ReflectionSpear.getActiveColliders().some((_reflectionCollider) => _reflectionCollider.uuid === collider.uuid);
     }
 
     protected onEnemyDead(enemy: XEnemy, _spear: XSpear): void {
