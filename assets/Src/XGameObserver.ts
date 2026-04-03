@@ -1,5 +1,5 @@
 import { EDITOR } from "cc/env";
-import { CollisionZone } from "./CollisionZone";
+import { Collider2D } from "cc";
 import { XEnemy } from "./XEnemy";
 import { XSpear } from "./XSpear";
 import { Enum } from "cc";
@@ -25,10 +25,10 @@ export type XGameObserverArgs = {
     onBalloonPop: [XEnemy];
     onEnemyDead: [XEnemy, XSpear];
     onEnemyFalling: [XEnemy, XSpear];
-    onEnemyIdle: [XEnemy, CollisionZone | null];
+    onEnemyIdle: [XEnemy, Collider2D | null];
     onEveryEnemyDie: [];
     onSpearFly: [XSpear];
-    onSpearPinned: [XSpear, CollisionZone | null];
+    onSpearPinned: [XSpear, Collider2D | null];
 };
 
 type XGameObserverListener<_T extends XGameObserverEvent> = (...args: XGameObserverArgs[_T]) => void;

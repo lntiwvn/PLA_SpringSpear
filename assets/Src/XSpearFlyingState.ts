@@ -7,6 +7,7 @@ export class XSpearFlyingState implements IState<XSpear, [string], []> {
     public enter(context: XSpear, animationName: string): void {
         context.clearLaser();
         context.clearLaserTarget();
+        context.setSpearColliderEnabled(true);
         context.playAnimation(animationName, true);
         XGameBridge.get()?.captureSpearLaunchOverlaps(context);
         XGameObserver.invoke("onSpearFly", context);
@@ -36,7 +37,8 @@ export class XSpearFlyingState implements IState<XSpear, [string], []> {
             return;
         }
 
-        hit.enemy.balloonZone && (hit.enemy.balloonZone.node.active = false);
+        hit.enemy.hideBalloon();
+        hit.enemy.setBalloonColliderEnabled(false);
         XGameObserver.invoke("onBalloonPop", hit.enemy);
     }
 }

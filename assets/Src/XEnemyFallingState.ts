@@ -25,11 +25,12 @@ export class XEnemyFallingState implements IState<XEnemy, [string], []> {
             position.y + velocity.y * dt,
             position.z,
         );
+        context.syncColliders();
 
-        const groundZone = XGameBridge.get()?.findGroundZoneForEnemy(context) ?? null;
-        if (groundZone) {
-            context.landOnGround(groundZone);
-            XGameObserver.invoke("onEnemyIdle", context, groundZone);
+        const groundCollider = XGameBridge.get()?.findGroundColliderForEnemy(context) ?? null;
+        if (groundCollider) {
+            context.landOnGround(groundCollider);
+            XGameObserver.invoke("onEnemyIdle", context, groundCollider);
 
         }
     }

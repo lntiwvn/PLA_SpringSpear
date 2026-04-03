@@ -1,5 +1,4 @@
-import { _decorator, Component, EventTouch, Node, Vec2, Vec3, UITransform } from "cc";
-import { CollisionZone } from "./CollisionZone";
+import { _decorator, Collider2D, Component, EventTouch, Node, Vec2, Vec3, UITransform } from "cc";
 import { GameBoard } from "./GameBoard";
 import XGameBridge, { XEnemyHitData, XGameLaserHit } from "./XGameBridge";
 import { XEnemy, XEnemyStateId } from "./XEnemy";
@@ -84,7 +83,7 @@ export class XGameController extends Component {
             return;
         }
 
-        this.spear.aimAt(this.getTouchLocal(event));
+        this.spear.aimAt(this.getTouchLocal(event), event.getUILocation());
     }
 
     protected onTouchEnd(): void {
@@ -104,49 +103,43 @@ export class XGameController extends Component {
     }
 
     public findSpearHit(spear: XSpear): { enemy: XEnemy; kind: "body" | "balloon" } | null {
-        spear.refreshIgnoredCollisionZones(this.enemies);
-
-        for (const enemy of this.enemies) {
-            if (enemy.stateMachine.cid === null) {
-                continue;
-            }
-
-            if (
-                enemy.bodyZone?.node.active
-                && spear.checkCollisionWithZone(enemy.bodyZone)
-                && !spear.shouldIgnoreCollisionZone(enemy.bodyZone)
-            ) {
-                return { enemy, kind: "body" };
-            }
-
-            if (
-                enemy.balloonZone?.node.active
-                && spear.checkCollisionWithZone(enemy.balloonZone)
-                && !spear.shouldIgnoreCollisionZone(enemy.balloonZone)
-            ) {
-                return { enemy, kind: "balloon" };
-            }
+        spear.refreshIgnoredColliders(this.enemies);
+        const shaftHit = this.findEnemyHitAlongSegmentBoard(
+            spear.getPinnedBoardPosition(),
+            spear.getFreeEndBoardPosition(),
+            spear,
+        );
+        if (shaftHit) {
+            return shaftHit;
         }
 
-        return null;
+        const previousHeadBoard = this.gameBoard.toBoardPoint(spear.getPreviousHeadWorldPosition());
+        const currentHeadBoard = spear.getHeadPosition();
+        return this.findEnemyHitAlongSegmentBoard(
+            previousHeadBoard,
+            currentHeadBoard,
+            spear,
+        );
     }
 
     public captureSpearLaunchOverlaps(spear: XSpear): void {
-        spear.captureIgnoredCollisionZones(this.enemies);
+        spear.captureIgnoredColliders(this.enemies);
     }
 
-    public findGroundZoneForEnemy(enemy: XEnemy): CollisionZone | null {
-        if (!enemy.legZone?.node.active) {
+    public findGroundColliderForEnemy(enemy: XEnemy): Collider2D | null {
+        const legCollider = enemy.getLegCollider();
+        const legRect = enemy.getLegColliderRect();
+        if (!legCollider?.enabledInHierarchy || !legRect) {
             return null;
         }
 
-        for (const groundZone of this.gameBoard?.groundZones ?? []) {
-            if (!groundZone?.node.active) {
+        for (const groundCollider of this.gameBoard?.grounds ?? []) {
+            if (!groundCollider?.enabledInHierarchy) {
                 continue;
             }
 
-            if (this.isZoneColliding(enemy.legZone, groundZone)) {
-                return groundZone;
+            if (groundCollider.worldAABB.intersects(legRect)) {
+                return groundCollider;
             }
         }
 
@@ -167,23 +160,20 @@ export class XGameController extends Component {
     }
 
     public castLaser(origin: Vec2, direction: Vec2): XGameLaserHit | null {
-        const boardHit = this.gameBoard?.raycastToEdge(origin, direction);
+        const boardHit = this.gameBoard?.raycastWall(origin, direction);
         if (!boardHit) {
             return null;
         }
-
-        let closestHit: XGameLaserHit = {
-            enemy: null,
-            point: boardHit,
-        };
-        let closestDistance = Vec2.distance(origin, boardHit);
+        let closestHit: XGameLaserHit = { enemy: null, point: boardHit.point };
+        let closestDistance = boardHit.distance;
 
         for (const enemy of this.enemies) {
-            if (!enemy.bodyZone?.node.active) {
+            const bodyCollider = enemy.getBodyCollider();
+            if (!bodyCollider?.enabledInHierarchy) {
                 continue;
             }
 
-            const hitPoint = this.raycastRect(origin, direction, enemy.bodyZone.getBoardRect());
+            const hitPoint = this.raycastBoardRect(origin, direction, this.getColliderBoardRect(bodyCollider));
             if (!hitPoint) {
                 continue;
             }
@@ -198,51 +188,70 @@ export class XGameController extends Component {
             }
         }
 
+        for (const boardCollider of [...(this.gameBoard.walls ?? []), ...(this.gameBoard.grounds ?? [])]) {
+            if (!boardCollider?.enabledInHierarchy) {
+                continue;
+            }
+
+            const hitPoint = this.raycastBoardRect(origin, direction, this.getColliderBoardRect(boardCollider));
+            if (!hitPoint) {
+                continue;
+            }
+
+            const distance = Vec2.distance(origin, hitPoint);
+            if (distance < closestDistance) {
+                closestDistance = distance;
+                closestHit = {
+                    enemy: null,
+                    point: hitPoint,
+                };
+            }
+        }
+
         return closestHit;
     }
 
-    protected onEnemyDead(enemy: XEnemy, _spear: XSpear): void {
-        const hitData = this.resolveEnemyHitData(enemy, _spear);
-        const didChange = enemy.enterDead(hitData.splitKind, hitData.hitDirection);
-        if (!didChange) {
-            return;
+    protected findEnemyHitAlongSegmentBoard(from: Vec2, to: Vec2, spear: XSpear): { enemy: XEnemy; kind: "body" | "balloon" } | null {
+        for (const enemy of this.enemies) {
+            if (enemy.stateMachine.cid === null) {
+                continue;
+            }
+
+            const bodyCollider = enemy.getBodyCollider();
+            if (
+                bodyCollider?.enabledInHierarchy
+                && !spear.shouldIgnoreCollider(bodyCollider)
+                && this.segmentIntersectsRect(from, to, this.getColliderBoardRect(bodyCollider))
+            ) {
+                return { enemy, kind: "body" };
+            }
+
+            const balloonCollider = enemy.getBalloonCollider();
+            if (
+                balloonCollider?.enabledInHierarchy
+                && !spear.shouldIgnoreCollider(balloonCollider)
+                && this.segmentIntersectsRect(from, to, this.getColliderBoardRect(balloonCollider))
+            ) {
+                return { enemy, kind: "balloon" };
+            }
         }
 
-        this.invokeEveryEnemyDieIfNeeded();
+        return null;
     }
 
-    protected onEnemyFalling(enemy: XEnemy, _spear: XSpear): void {
-        enemy.enterFalling();
+    protected getColliderBoardRect(collider: Collider2D): { x: number; y: number; width: number; height: number } {
+        const aabb = collider.worldAABB;
+        const min = this.gameBoard.toBoardPoint(new Vec3(aabb.xMin, aabb.yMin, 0));
+        const max = this.gameBoard.toBoardPoint(new Vec3(aabb.xMax, aabb.yMax, 0));
+        return {
+            x: Math.min(min.x, max.x),
+            y: Math.min(min.y, max.y),
+            width: Math.abs(max.x - min.x),
+            height: Math.abs(max.y - min.y),
+        };
     }
 
-    protected onBalloonPop(enemy: XEnemy): void {
-        enemy.enterFalling();
-    }
-
-    protected invokeEveryEnemyDieIfNeeded(): void {
-        if (this._didInvokeEveryEnemyDie || this.enemies.length <= 0) {
-            return;
-        }
-
-        const isEveryEnemyDead = this.enemies.every((_enemy) => _enemy?.stateMachine.cid === XEnemyStateId.Dead);
-        if (!isEveryEnemyDead) {
-            return;
-        }
-
-        this._didInvokeEveryEnemyDie = true;
-        XGameObserver.invoke("onEveryEnemyDie");
-    }
-
-    protected isZoneColliding(a: CollisionZone, b: CollisionZone): boolean {
-        const rectA = a.getBoardRect();
-        const rectB = b.getBoardRect();
-        return rectA.x < rectB.x + rectB.width
-            && rectA.x + rectA.width > rectB.x
-            && rectA.y < rectB.y + rectB.height
-            && rectA.y + rectA.height > rectB.y;
-    }
-
-    protected raycastRect(origin: Vec2, direction: Vec2, rect: { x: number; y: number; width: number; height: number }): Vec2 | null {
+    protected raycastBoardRect(origin: Vec2, direction: Vec2, rect: { x: number; y: number; width: number; height: number }): Vec2 | null {
         const dir = direction.clone().normalize();
         if (dir.lengthSqr() <= 0.0001) {
             return null;
@@ -289,4 +298,89 @@ export class XGameController extends Component {
 
         return new Vec2(origin.x + dir.x * hitT, origin.y + dir.y * hitT);
     }
+
+    protected segmentIntersectsRect(segA: Vec2, segB: Vec2, rect: { x: number; y: number; width: number; height: number }): boolean {
+        const minX = rect.x;
+        const maxX = rect.x + rect.width;
+        const minY = rect.y;
+        const maxY = rect.y + rect.height;
+
+        if (this.isPointInsideRect(segA, minX, maxX, minY, maxY) || this.isPointInsideRect(segB, minX, maxX, minY, maxY)) {
+            return true;
+        }
+
+        const topLeft = new Vec2(minX, maxY);
+        const topRight = new Vec2(maxX, maxY);
+        const bottomLeft = new Vec2(minX, minY);
+        const bottomRight = new Vec2(maxX, minY);
+
+        return this.segmentsIntersect(segA, segB, topLeft, topRight)
+            || this.segmentsIntersect(segA, segB, topRight, bottomRight)
+            || this.segmentsIntersect(segA, segB, bottomRight, bottomLeft)
+            || this.segmentsIntersect(segA, segB, bottomLeft, topLeft);
+    }
+
+    protected isPointInsideRect(point: Vec2, minX: number, maxX: number, minY: number, maxY: number): boolean {
+        return point.x >= minX && point.x <= maxX && point.y >= minY && point.y <= maxY;
+    }
+
+    protected segmentsIntersect(a1: Vec2, a2: Vec2, b1: Vec2, b2: Vec2): boolean {
+        const d1 = this.cross(a1, a2, b1);
+        const d2 = this.cross(a1, a2, b2);
+        const d3 = this.cross(b1, b2, a1);
+        const d4 = this.cross(b1, b2, a2);
+
+        if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+            return true;
+        }
+
+        return (d1 === 0 && this.onSegment(a1, a2, b1))
+            || (d2 === 0 && this.onSegment(a1, a2, b2))
+            || (d3 === 0 && this.onSegment(b1, b2, a1))
+            || (d4 === 0 && this.onSegment(b1, b2, a2));
+    }
+
+    protected cross(a: Vec2, b: Vec2, c: Vec2): number {
+        return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    }
+
+    protected onSegment(a: Vec2, b: Vec2, point: Vec2): boolean {
+        return point.x >= Math.min(a.x, b.x)
+            && point.x <= Math.max(a.x, b.x)
+            && point.y >= Math.min(a.y, b.y)
+            && point.y <= Math.max(a.y, b.y);
+    }
+
+    protected onEnemyDead(enemy: XEnemy, _spear: XSpear): void {
+        const hitData = this.resolveEnemyHitData(enemy, _spear);
+        const didChange = enemy.enterDead(hitData.splitKind, hitData.hitDirection);
+        if (!didChange) {
+            return;
+        }
+
+        this.invokeEveryEnemyDieIfNeeded();
+    }
+
+    protected onEnemyFalling(enemy: XEnemy, _spear: XSpear): void {
+        enemy.enterFalling();
+    }
+
+    protected onBalloonPop(enemy: XEnemy): void {
+        enemy.enterFalling();
+    }
+
+    protected invokeEveryEnemyDieIfNeeded(): void {
+        if (this._didInvokeEveryEnemyDie || this.enemies.length <= 0) {
+            return;
+        }
+
+        const isEveryEnemyDead = this.enemies.every((_enemy) => _enemy?.stateMachine.cid === XEnemyStateId.Dead);
+        if (!isEveryEnemyDead) {
+            return;
+        }
+
+        this._didInvokeEveryEnemyDie = true;
+        XGameObserver.invoke("onEveryEnemyDie");
+    }
+
 }

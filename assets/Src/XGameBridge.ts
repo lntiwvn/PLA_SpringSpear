@@ -1,6 +1,5 @@
-import { CollisionZone } from "./CollisionZone";
 import { GameBoard } from "./GameBoard";
-import { Vec2 } from "cc";
+import { Collider2D, Vec2 } from "cc";
 import { XEnemy } from "./XEnemy";
 import { XSpear } from "./XSpear";
 
@@ -19,7 +18,7 @@ export type XGameLaserHit = {
 export type XGameBridgeRuntime = {
     captureSpearLaunchOverlaps(spear: XSpear): void;
     findSpearHit(spear: XSpear): XSpearHitResult;
-    findGroundZoneForEnemy(enemy: XEnemy): CollisionZone | null;
+    findGroundColliderForEnemy(enemy: XEnemy): Collider2D | null;
     getBoard(): GameBoard | null;
     resolveEnemyHitData(enemy: XEnemy, spear: XSpear): XEnemyHitData;
     castLaser(origin: Vec2, direction: Vec2): XGameLaserHit | null;

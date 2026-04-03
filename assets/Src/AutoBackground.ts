@@ -14,7 +14,7 @@ export class AutoBackground extends Component {
     get root() { if(!this._root) this._root = this.getComponent(UITransform); return this._root; }
 
     protected onLoad(): void {
-        if(sys.isBrowser) {
+        if(!sys.isBrowser) {
             this.destroy();
             return;
         }
@@ -26,9 +26,11 @@ export class AutoBackground extends Component {
 
     protected _resize() {
         const _rect = game.canvas;
+        const _sx = view.getScaleX();
+        const _sy = view.getScaleY();
 
-        let _w = _rect.width
-        let _h = _rect.height
+        let _w = _rect.width / _sx
+        let _h = _rect.height / _sy
 
         if(this.noCorssDesign) {
             const _ds = view.getDesignResolutionSize();
@@ -37,7 +39,7 @@ export class AutoBackground extends Component {
         }
 
         this.root.setContentSize(_w, _h);
-        console.log("Switch TO", _w, _h)
+        console.log("Switch TO", _w, _h, this.root.contentSize.toString());
     }
 
     protected onEnable(): void {

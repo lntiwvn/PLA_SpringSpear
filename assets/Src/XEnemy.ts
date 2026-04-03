@@ -1,5 +1,4 @@
-import { _decorator, Component, IVec2Like, RigidBody2D, UITransform, Vec2, Vec3, sp, v2, v3 } from "cc";
-import { CollisionZone } from "./CollisionZone";
+import { _decorator, Collider2D, Component, IVec2Like, RigidBody2D, UITransform, Vec2, Vec3, sp, v2, v3 } from "cc";
 import { IState } from "./IState";
 import { PhysicManager } from "./PhysicManager";
 import { StateEnterArgs, StateExitArgs } from "./State";
@@ -13,7 +12,6 @@ import { AnimSelector } from "./AnimSelector";
 import { Enum } from "cc";
 import { EDITOR } from "cc/env";
 import XGameBridge, { XEnemySplitKind } from "./XGameBridge";
-import { BoxCollider2D } from "cc";
 import { ERigidBody2DType } from "cc";
 import { ParticleSystem } from "cc";
 import { AudioSource } from "cc";
@@ -62,6 +60,9 @@ export class XEnemy extends Component {
     @property(AudioSource)
     balloonPop: AudioSource = null
 
+    @property([ParticleSystem])
+    baloonPopPart: ParticleSystem[] = [] 
+
     onFocusInEditor(): void {
         const _att = Object.keys(XEnemyStateId).filter((_key) => Number.isNaN(Number(_key)));
         const _es = _att.map((_a) => ({ name: _a, value: XEnemyStateId[_a] }))
@@ -77,14 +78,14 @@ export class XEnemy extends Component {
     @property([AnimSelector])
     selectors: AnimSelector<XEnemyStateId>[] = []
 
-    @property(CollisionZone)
-    public bodyZone: CollisionZone = null;
+    @property(Collider2D)
+    public bodyCollider: Collider2D = null;
 
-    @property(CollisionZone)
-    public balloonZone: CollisionZone = null;
+    @property(Collider2D)
+    public balloonCollider: Collider2D = null;
 
-    @property(CollisionZone)
-    public legZone: CollisionZone = null;
+    @property(Collider2D)
+    public legCollider: Collider2D = null;
 
     @property(RigidBody2D)
     public splitTopNode: RigidBody2D = null;
@@ -120,6 +121,7 @@ export class XEnemy extends Component {
     protected _splitPieces: XEnemySplitPiece[] = [];
     protected _pendingSplitKind: XEnemySplitKind = "vertical";
     protected _pendingHitDirection: Vec2 = new Vec2(0, 1);
+    protected _stateBeforeScare: XEnemyStateId = XEnemyStateId.Idle;
     protected _map: Record<XEnemyStateId, string> = {
         [XEnemyStateId.Idle]: "",
         [XEnemyStateId.Falling]: "",
@@ -224,13 +226,8 @@ export class XEnemy extends Component {
             this.visual.node.active = false;
         }
 
-        if (this.bodyZone) {
-            this.bodyZone.node.active = false;
-        }
-
-        if (this.balloonZone) {
-            this.balloonZone.node.active = false;
-        }
+        this.setBodyColliderEnabled(false);
+        this.setBalloonColliderEnabled(false);
     }
 
     public resetSplitState(): void {
@@ -350,6 +347,7 @@ export class XEnemy extends Component {
         const nextPosition = new Vec3();
         Vec3.lerp(nextPosition, this._startPosition, this._moveTargetPosition, this._moveProgress);
         this.node.setPosition(nextPosition);
+        this.syncColliders();
     }
 
     public resolveMoveTargetPosition(targetPosition?: IVec2Like | null): Vec3 {
@@ -371,18 +369,19 @@ export class XEnemy extends Component {
     }
 
     public isOnGround(): boolean {
-        return !!this.getGroundZone();
+        return !!this.getGroundCollider();
     }
 
-    public landOnGround(groundZone?: CollisionZone | null): void {
-        const resolvedGroundZone = groundZone ?? this.getGroundZone();
-        if (resolvedGroundZone) {
+    public landOnGround(groundCollider?: Collider2D | null): void {
+        const resolvedGroundCollider = groundCollider ?? this.getGroundCollider();
+        if (resolvedGroundCollider) {
             const position = this.node.getPosition();
-            const legRect = this.legZone?.getBoardRect() ?? null;
-            const groundRect = resolvedGroundZone.getBoardRect();
-            const legBottom = legRect ? legRect.y : this.getLegZonePosition().y;
-            const groundTop = groundRect.y + groundRect.height;
+            const legRect = this.getLegColliderRect();
+            const groundRect = resolvedGroundCollider.worldAABB;
+            const legBottom = legRect ? legRect.yMin : this.getLegColliderBottomWorldY();
+            const groundTop = groundRect.yMax;
             this.node.setPosition(position.x, position.y + (groundTop - legBottom), position.z);
+            this.syncColliders();
         }
 
         this.resetFallVelocity();
@@ -390,8 +389,8 @@ export class XEnemy extends Component {
     }
 
     protected getLandingOffsetY(): number {
-        if (this.legZone) {
-            return this.legZone.node.position.y;
+        if (this.legCollider) {
+            return this.legCollider.node.position.y;
         }
 
         const uiTransform = this.getComponent(UITransform) ?? this.visual?.getComponent(UITransform);
@@ -402,16 +401,18 @@ export class XEnemy extends Component {
         return -uiTransform.height * uiTransform.anchorY;
     }
 
-    public getLegZonePosition(): Vec2 {
-        if (this.legZone) {
-            return this.legZone.getBoardPos2D();
+    public getLegColliderBottomWorldY(): number {
+        const collider = this.getLegCollider();
+        if (collider?.worldAABB) {
+            return collider.worldAABB.yMin;
         }
 
-        return new Vec2(this.node.position.x, this.node.position.y + this.getLandingOffsetY());
+        const worldPosition = this.node.worldPosition;
+        return worldPosition.y + this.getLandingOffsetY();
     }
 
-    public getGroundZone(): CollisionZone | null {
-        return XGameBridge.get()?.findGroundZoneForEnemy(this) ?? null;
+    public getGroundCollider(): Collider2D | null {
+        return XGameBridge.get()?.findGroundColliderForEnemy(this) ?? null;
     }
 
     public changeState<
@@ -427,34 +428,62 @@ export class XEnemy extends Component {
 
     public enterIdle(): boolean {
         this.scareAu?.stop();
+        this.setBodyColliderEnabled(true);
+        this.setBalloonColliderEnabled(this.isBalloonAvailable());
         return this.changeState<XEnemyIdleState>(XEnemyStateId.Idle, [this.getAnim(XEnemyStateId.Idle)]);
     }
 
     public enterFalling(): boolean {
-        if (this.balloonZone) {
-            this.balloonZone.node.active = false;
-            this.balloonPop?.play();
-        }
+        this.hideBalloon();
+        this.setBodyColliderEnabled(true);
+        this.setBalloonColliderEnabled(false);
         return this.changeState<XEnemyFallingState>(XEnemyStateId.Falling, [this.getAnim(XEnemyStateId.Falling)]);
     }
 
     public enterMoving(targetPosition?: IVec2Like | null): boolean {
         const resolvedTarget = this.resolveMoveTargetPosition(targetPosition);
+        this.setBodyColliderEnabled(true);
+        this.setBalloonColliderEnabled(this.isBalloonAvailable());
         return this.changeState<XEnemyMovingState>(XEnemyStateId.Moving, [this.getAnim(XEnemyStateId.Moving), resolvedTarget]);
     }
 
     public enterScare(): boolean {
+        if (this.stateMachine.cid === XEnemyStateId.Moving) {
+            this._scare();
+            return false;
+        }
+
         if (this.stateMachine.cid !== XEnemyStateId.Idle) {
             return false;
         }
 
-        this.scareAu?.play();
+        this._stateBeforeScare = this.stateMachine.cid ?? XEnemyStateId.Idle;
+        this._scare();
+        this.setBodyColliderEnabled(true);
+        this.setBalloonColliderEnabled(this.isBalloonAvailable());
         return this.changeState<XEnemyScareState>(XEnemyStateId.Scare, [this.getAnim(XEnemyStateId.Scare)]);
     }
 
+    protected _scare() {
+        if(!this.scareAu) return;
+
+        if (!this.scareAu.playing) {
+            this.scareAu.play()
+        }
+    }
+
     public clearScare(): boolean {
+        if (this.stateMachine.cid === XEnemyStateId.Moving) {
+            this.scareAu?.stop();
+            return false;
+        }
+
         if (this.stateMachine.cid !== XEnemyStateId.Scare) {
             return false;
+        }
+
+        if (this._stateBeforeScare === XEnemyStateId.Moving) {
+            return this.enterMoving();
         }
 
         return this.enterIdle();
@@ -465,17 +494,66 @@ export class XEnemy extends Component {
             return false;
         }
 
-        if (this.bodyZone) {
-            this.bodyZone.node.active = false;
-        }
-
-        if (this.balloonZone) {
-            this.balloonZone.node.active = false;
-        }
+        this.setBodyColliderEnabled(false);
+        this.setBalloonColliderEnabled(false);
+        this.hideBalloon();
 
         if (splitKind && hitDirection) {
             this.prepareSplit(splitKind, hitDirection);
         }
         return this.changeState<XEnemyDeadState>(XEnemyStateId.Dead, [this.getAnim(XEnemyStateId.Dead), this.bloods, this.deadAu]);
+    }
+
+    public getBodyCollider(): Collider2D | null {
+        return this.bodyCollider;
+    }
+
+    public getBalloonCollider(): Collider2D | null {
+        return this.balloonCollider;
+    }
+
+    public setBodyColliderEnabled(value: boolean): void {
+        const collider = this.getBodyCollider();
+        if (collider) {
+            collider.enabled = value;
+            collider.apply();
+        }
+    }
+
+    public setBalloonColliderEnabled(value: boolean): void {
+        const collider = this.getBalloonCollider();
+        if (collider) {
+            collider.enabled = value;
+            collider.apply();
+        }
+    }
+
+    public getLegCollider(): Collider2D | null {
+        return this.legCollider;
+    }
+
+    public getLegColliderRect(): { xMin: number; yMin: number; xMax: number; yMax: number } | null {
+        const collider = this.getLegCollider();
+        return collider?.worldAABB ?? null;
+    }
+
+    public syncColliders(): void {
+        this.getBodyCollider()?.apply();
+        this.getBalloonCollider()?.apply();
+        this.getLegCollider()?.apply();
+    }
+
+    public isBalloonAvailable(): boolean {
+        return !!this.balloonCollider?.node.active;
+    }
+
+    public hideBalloon(): void {
+        if (this.balloonCollider?.node) {
+            this.balloonCollider.node.active = false;
+            if(this.balloonCollider.node.active) {
+                this.balloonPop?.play();
+                this.baloonPopPart.forEach(_ => _?.play())
+            }
+        }
     }
 }

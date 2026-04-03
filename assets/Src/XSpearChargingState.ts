@@ -3,6 +3,7 @@ import { XSpear } from "./XSpear";
 
 export class XSpearChargingState implements IState<XSpear, [string], []> {
     public enter(context: XSpear, animationName: string): void {
+        context.setSpearColliderEnabled(false);
         context.playAnimation(animationName, true);
         context.updateLaser();
     }

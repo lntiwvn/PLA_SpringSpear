@@ -1,11 +1,21 @@
-import { _decorator, Component, Mat4, Node, UITransform, Vec2, Vec3, Rect } from 'cc';
-import { CollisionZone } from './CollisionZone';
+import { _decorator, Collider2D, Component, Mat4, Node, UITransform, Vec2, Vec3, Rect } from 'cc';
 const { ccclass, property } = _decorator;
 
 @ccclass('GameBoard')
 export class GameBoard extends Component {
-    @property([CollisionZone])
-    public groundZones: CollisionZone[] = [];
+    @property([Collider2D])
+    public grounds: Collider2D[] = [];
+
+    @property(Node)
+    get getter() { return null }
+    set getter(x: Node) {
+        if(!x) return;
+        const colliders = x.getComponents(Collider2D);
+        this.walls.push(...colliders.filter(Boolean))
+    }
+
+    @property([Collider2D])
+    public walls: Collider2D[] = [];
 
     private _bounds: Rect = new Rect();
     private _uiTransform: UITransform = null;
@@ -149,5 +159,198 @@ export class GameBoard extends Component {
 
         if (tMin === Infinity) return null;
         return new Vec2(origin.x + tMin * dir.x, origin.y + tMin * dir.y);
+    }
+
+    public findWallHit(fromWorldPoint: Vec3, toWorldPoint: Vec3): { point: Vec2; normal: Vec2 } | null {
+        const fromBoardPoint = this.toBoardPoint(fromWorldPoint);
+        const toBoardPoint = this.toBoardPoint(toWorldPoint);
+        const direction = toBoardPoint.clone().subtract(fromBoardPoint);
+        const maxDistance = direction.length();
+        if (maxDistance <= 0.0001) {
+            return null;
+        }
+
+        const hit = this.raycastWall(fromBoardPoint, direction, maxDistance + 0.5);
+        if (!hit) {
+            return null;
+        }
+
+        return {
+            point: hit.point,
+            normal: hit.normal,
+        };
+    }
+
+    public raycastWall(origin: Vec2, direction: Vec2, maxDistance: number = Number.POSITIVE_INFINITY): { point: Vec2; normal: Vec2; collider: Collider2D; distance: number } | null {
+        const dir = direction.clone();
+        if (dir.lengthSqr() <= 0.0001) {
+            return null;
+        }
+
+        dir.normalize();
+        let closestHit: { point: Vec2; normal: Vec2; collider: Collider2D; distance: number } | null = null;
+        for (const wall of this.walls) {
+            if (!wall?.enabledInHierarchy) {
+                continue;
+            }
+
+            const hit = this.raycastBoardRect(origin, dir, this.getColliderBoardRect(wall), maxDistance);
+            if (!hit) {
+                continue;
+            }
+
+            if (!closestHit || hit.distance < closestHit.distance) {
+                closestHit = {
+                    point: hit.point,
+                    normal: hit.normal,
+                    collider: wall,
+                    distance: hit.distance,
+                };
+            }
+        }
+
+        return closestHit;
+    }
+
+    public findNearestWall(point: Vec2): { point: Vec2; normal: Vec2; collider: Collider2D; distance: number } | null {
+        let closestHit: { point: Vec2; normal: Vec2; collider: Collider2D; distance: number } | null = null;
+        for (const wall of this.walls) {
+            if (!wall?.enabledInHierarchy) {
+                continue;
+            }
+
+            const rect = this.getColliderBoardRect(wall);
+            const hit = this.findClosestPointOnRect(point, rect);
+            if (!hit) {
+                continue;
+            }
+
+            if (!closestHit || hit.distance < closestHit.distance) {
+                closestHit = {
+                    point: hit.point,
+                    normal: hit.normal,
+                    collider: wall,
+                    distance: hit.distance,
+                };
+            }
+        }
+
+        return closestHit;
+    }
+
+    public getColliderBoardRect(collider: Collider2D): { x: number; y: number; width: number; height: number } {
+        const aabb = collider.worldAABB;
+        const min = this.toBoardPoint(new Vec3(aabb.xMin, aabb.yMin, 0));
+        const max = this.toBoardPoint(new Vec3(aabb.xMax, aabb.yMax, 0));
+        return {
+            x: Math.min(min.x, max.x),
+            y: Math.min(min.y, max.y),
+            width: Math.abs(max.x - min.x),
+            height: Math.abs(max.y - min.y),
+        };
+    }
+
+    protected raycastBoardRect(
+        origin: Vec2,
+        direction: Vec2,
+        rect: { x: number; y: number; width: number; height: number },
+        maxDistance: number,
+    ): { point: Vec2; normal: Vec2; distance: number } | null {
+        let tMin = -Infinity;
+        let tMax = Infinity;
+        let minNormal = new Vec2();
+        let maxNormal = new Vec2();
+
+        const minX = rect.x;
+        const maxX = rect.x + rect.width;
+        const minY = rect.y;
+        const maxY = rect.y + rect.height;
+
+        if (Math.abs(direction.x) < 0.0001) {
+            if (origin.x < minX || origin.x > maxX) {
+                return null;
+            }
+        } else {
+            const tx1 = (minX - origin.x) / direction.x;
+            const tx2 = (maxX - origin.x) / direction.x;
+            const txMin = Math.min(tx1, tx2);
+            const txMax = Math.max(tx1, tx2);
+            const entryNormal = tx1 < tx2 ? new Vec2(-1, 0) : new Vec2(1, 0);
+            const exitNormal = tx1 < tx2 ? new Vec2(1, 0) : new Vec2(-1, 0);
+            if (txMin > tMin) {
+                tMin = txMin;
+                minNormal = entryNormal;
+            }
+            if (txMax < tMax) {
+                tMax = txMax;
+                maxNormal = exitNormal;
+            }
+        }
+
+        if (Math.abs(direction.y) < 0.0001) {
+            if (origin.y < minY || origin.y > maxY) {
+                return null;
+            }
+        } else {
+            const ty1 = (minY - origin.y) / direction.y;
+            const ty2 = (maxY - origin.y) / direction.y;
+            const tyMin = Math.min(ty1, ty2);
+            const tyMax = Math.max(ty1, ty2);
+            const entryNormal = ty1 < ty2 ? new Vec2(0, -1) : new Vec2(0, 1);
+            const exitNormal = ty1 < ty2 ? new Vec2(0, 1) : new Vec2(0, -1);
+            if (tyMin > tMin) {
+                tMin = tyMin;
+                minNormal = entryNormal;
+            }
+            if (tyMax < tMax) {
+                tMax = tyMax;
+                maxNormal = exitNormal;
+            }
+        }
+
+        if (tMax < 0 || tMin > tMax) {
+            return null;
+        }
+
+        const hitDistance = tMin >= 0 ? tMin : tMax;
+        if (hitDistance < 0 || hitDistance > maxDistance) {
+            return null;
+        }
+
+        return {
+            point: new Vec2(origin.x + direction.x * hitDistance, origin.y + direction.y * hitDistance),
+            normal: (tMin >= 0 ? minNormal : maxNormal).clone(),
+            distance: hitDistance,
+        };
+    }
+
+    protected findClosestPointOnRect(
+        point: Vec2,
+        rect: { x: number; y: number; width: number; height: number },
+    ): { point: Vec2; normal: Vec2; distance: number } | null {
+        const minX = rect.x;
+        const maxX = rect.x + rect.width;
+        const minY = rect.y;
+        const maxY = rect.y + rect.height;
+        const candidates = [
+            { point: new Vec2(minX, Math.min(maxY, Math.max(minY, point.y))), normal: new Vec2(-1, 0) },
+            { point: new Vec2(maxX, Math.min(maxY, Math.max(minY, point.y))), normal: new Vec2(1, 0) },
+            { point: new Vec2(Math.min(maxX, Math.max(minX, point.x)), minY), normal: new Vec2(0, -1) },
+            { point: new Vec2(Math.min(maxX, Math.max(minX, point.x)), maxY), normal: new Vec2(0, 1) },
+        ];
+
+        let closest: { point: Vec2; normal: Vec2; distance: number } | null = null;
+        for (const candidate of candidates) {
+            const distance = Vec2.distance(point, candidate.point);
+            if (!closest || distance < closest.distance) {
+                closest = {
+                    point: candidate.point,
+                    normal: candidate.normal,
+                    distance,
+                };
+            }
+        }
+
+        return closest;
     }
 }

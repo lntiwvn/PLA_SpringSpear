@@ -1921,6 +1921,9 @@
       "__id__": 18
     },
     "bloods": [],
+    "deadAu": null,
+    "scareAu": null,
+    "balloonPop": null,
     "selectors": [
       {
         "__id__": 81
@@ -1938,15 +1941,9 @@
         "__id__": 85
       }
     ],
-    "bodyZone": {
-      "__id__": 24
-    },
-    "balloonZone": {
-      "__id__": 12
-    },
-    "legZone": {
-      "__id__": 30
-    },
+    "bodyCollider": null,
+    "balloonCollider": null,
+    "legCollider": null,
     "splitTopNode": {
       "__id__": 40
     },
@@ -3834,6 +3831,9 @@
       "__id__": 103
     },
     "bloods": [],
+    "deadAu": null,
+    "scareAu": null,
+    "balloonPop": null,
     "selectors": [
       {
         "__id__": 166
@@ -3851,15 +3851,9 @@
         "__id__": 170
       }
     ],
-    "bodyZone": {
-      "__id__": 109
-    },
-    "balloonZone": {
-      "__id__": 97
-    },
-    "legZone": {
-      "__id__": 115
-    },
+    "bodyCollider": null,
+    "balloonCollider": null,
+    "legCollider": null,
     "splitTopNode": {
       "__id__": 125
     },
@@ -5747,6 +5741,9 @@
       "__id__": 188
     },
     "bloods": [],
+    "deadAu": null,
+    "scareAu": null,
+    "balloonPop": null,
     "selectors": [
       {
         "__id__": 251
@@ -5764,15 +5761,9 @@
         "__id__": 255
       }
     ],
-    "bodyZone": {
-      "__id__": 194
-    },
-    "balloonZone": {
-      "__id__": 182
-    },
-    "legZone": {
-      "__id__": 200
-    },
+    "bodyCollider": null,
+    "balloonCollider": null,
+    "legCollider": null,
     "splitTopNode": {
       "__id__": 210
     },
@@ -7660,6 +7651,9 @@
       "__id__": 273
     },
     "bloods": [],
+    "deadAu": null,
+    "scareAu": null,
+    "balloonPop": null,
     "selectors": [
       {
         "__id__": 336
@@ -7677,15 +7671,9 @@
         "__id__": 340
       }
     ],
-    "bodyZone": {
-      "__id__": 279
-    },
-    "balloonZone": {
-      "__id__": 267
-    },
-    "legZone": {
-      "__id__": 285
-    },
+    "bodyCollider": null,
+    "balloonCollider": null,
+    "legCollider": null,
     "splitTopNode": {
       "__id__": 295
     },
@@ -9573,6 +9561,9 @@
       "__id__": 358
     },
     "bloods": [],
+    "deadAu": null,
+    "scareAu": null,
+    "balloonPop": null,
     "selectors": [
       {
         "__id__": 421
@@ -9590,15 +9581,9 @@
         "__id__": 425
       }
     ],
-    "bodyZone": {
-      "__id__": 364
-    },
-    "balloonZone": {
-      "__id__": 352
-    },
-    "legZone": {
-      "__id__": 370
-    },
+    "bodyCollider": null,
+    "balloonCollider": null,
+    "legCollider": null,
     "splitTopNode": {
       "__id__": 380
     },
@@ -11486,6 +11471,9 @@
       "__id__": 443
     },
     "bloods": [],
+    "deadAu": null,
+    "scareAu": null,
+    "balloonPop": null,
     "selectors": [
       {
         "__id__": 506
@@ -11503,15 +11491,9 @@
         "__id__": 510
       }
     ],
-    "bodyZone": {
-      "__id__": 449
-    },
-    "balloonZone": {
-      "__id__": 437
-    },
-    "legZone": {
-      "__id__": 455
-    },
+    "bodyCollider": null,
+    "balloonCollider": null,
+    "legCollider": null,
     "splitTopNode": {
       "__id__": 465
     },
@@ -12227,7 +12209,7 @@
     "fileId": "93lPXU94VO+bBxz5Uzyuot"
   },
   {
-    "__type__": "e4e60JATyVM36OXx6CYVhU8",
+    "__type__": "cc.BoxCollider2D",
     "_name": "",
     "_objFlags": 0,
     "__editorExtras__": {},
@@ -12238,12 +12220,27 @@
     "__prefab": {
       "__id__": 541
     },
-    "box": null,
+    "tag": 0,
+    "_group": 1,
+    "_density": 1,
+    "_sensor": false,
+    "_friction": 0.2,
+    "_restitution": 0,
+    "_offset": {
+      "__type__": "cc.Vec2",
+      "x": 0,
+      "y": 0
+    },
+    "_size": {
+      "__type__": "cc.Size",
+      "width": 50,
+      "height": 50
+    },
     "_id": ""
   },
   {
     "__type__": "cc.CompPrefabInfo",
-    "fileId": "5akQr/7XdCNo/H6VNpTFdJ"
+    "fileId": "7evckl70BLpbp6SjWzrlV3"
   },
   {
     "__type__": "cc.PrefabInfo",
@@ -13399,6 +13396,9 @@
       "__id__": 528
     },
     "bloods": [],
+    "deadAu": null,
+    "scareAu": null,
+    "balloonPop": null,
     "selectors": [
       {
         "__id__": 591
@@ -13416,13 +13416,9 @@
         "__id__": 595
       }
     ],
-    "bodyZone": {
-      "__id__": 534
-    },
-    "balloonZone": {
-      "__id__": 522
-    },
-    "legZone": {
+    "bodyCollider": null,
+    "balloonCollider": null,
+    "legCollider": {
       "__id__": 540
     },
     "splitTopNode": {
@@ -14140,7 +14136,7 @@
     "fileId": "e2YPOLflNIG4IK9HjZZyc3"
   },
   {
-    "__type__": "e4e60JATyVM36OXx6CYVhU8",
+    "__type__": "cc.BoxCollider2D",
     "_name": "",
     "_objFlags": 0,
     "__editorExtras__": {},
@@ -14151,12 +14147,27 @@
     "__prefab": {
       "__id__": 626
     },
-    "box": null,
+    "tag": 0,
+    "_group": 1,
+    "_density": 1,
+    "_sensor": false,
+    "_friction": 0.2,
+    "_restitution": 0,
+    "_offset": {
+      "__type__": "cc.Vec2",
+      "x": 0,
+      "y": 0
+    },
+    "_size": {
+      "__type__": "cc.Size",
+      "width": 50,
+      "height": 50
+    },
     "_id": ""
   },
   {
     "__type__": "cc.CompPrefabInfo",
-    "fileId": "c8TvBxw1xPx7Es08VFhRsd"
+    "fileId": "e5fhPbgFdFrab1Ptfu0gM2"
   },
   {
     "__type__": "cc.PrefabInfo",
@@ -15312,6 +15323,9 @@
       "__id__": 613
     },
     "bloods": [],
+    "deadAu": null,
+    "scareAu": null,
+    "balloonPop": null,
     "selectors": [
       {
         "__id__": 676
@@ -15329,13 +15343,9 @@
         "__id__": 680
       }
     ],
-    "bodyZone": {
-      "__id__": 619
-    },
-    "balloonZone": {
-      "__id__": 607
-    },
-    "legZone": {
+    "bodyCollider": null,
+    "balloonCollider": null,
+    "legCollider": {
       "__id__": 625
     },
     "splitTopNode": {
@@ -17225,6 +17235,9 @@
       "__id__": 698
     },
     "bloods": [],
+    "deadAu": null,
+    "scareAu": null,
+    "balloonPop": null,
     "selectors": [
       {
         "__id__": 761
@@ -17242,15 +17255,9 @@
         "__id__": 765
       }
     ],
-    "bodyZone": {
-      "__id__": 704
-    },
-    "balloonZone": {
-      "__id__": 692
-    },
-    "legZone": {
-      "__id__": 710
-    },
+    "bodyCollider": null,
+    "balloonCollider": null,
+    "legCollider": null,
     "splitTopNode": {
       "__id__": 720
     },
@@ -18494,8 +18501,8 @@
     },
     "_contentSize": {
       "__type__": "cc.Size",
-      "width": 462.169921875,
-      "height": 75.3
+      "width": 347.85992431640625,
+      "height": 79.6
     },
     "_anchorPoint": {
       "__type__": "cc.Vec2",
@@ -18530,23 +18537,23 @@
       "b": 0,
       "a": 255
     },
-    "_string": "Drag to kill enmies",
+    "_string": "Swipe to slay",
     "_horizontalAlign": 1,
     "_verticalAlign": 1,
-    "_actualFontSize": 55,
-    "_fontSize": 55,
+    "_actualFontSize": 60,
+    "_fontSize": 60,
     "_fontFamily": "Arial",
-    "_lineHeight": 55,
+    "_lineHeight": 60,
     "_overflow": 0,
     "_enableWrapText": true,
     "_font": {
-      "__uuid__": "8d952183-7fda-4af4-8ac4-2a4aa3d84b36",
+      "__uuid__": "2a292691-fa7b-4a96-8edb-c1fb979fb20f",
       "__expectedType__": "cc.TTFFont"
     },
     "_isSystemFontUsed": false,
     "_spacingX": 0,
     "_isItalic": false,
-    "_isBold": true,
+    "_isBold": false,
     "_isUnderline": false,
     "_underlineHeight": 2,
     "_cacheMode": 0,
@@ -18558,7 +18565,7 @@
       "b": 0,
       "a": 255
     },
-    "_outlineWidth": 3,
+    "_outlineWidth": 2,
     "_enableShadow": false,
     "_shadowColor": {
       "__type__": "cc.Color",
