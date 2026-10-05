@@ -1,0 +1,26 @@
+{
+  "source_sha256": "2b3eead909ecaf5f86543f0d878c474ab24d90a6936e64f653af966289bfd2e0",
+  "original_animations_preserved": 24,
+  "new_animations": [
+    "Comedy/01_mat_le",
+    "Comedy/02_cuoi_deu",
+    "Comedy/03_le_luoi",
+    "Comedy/04_cuoi_ban_no",
+    "Comedy/05_doi_bieu_cam"
+  ],
+  "original_skins_preserved": [
+    "default",
+    "Pickle/Blue",
+    "Pickle/Normal"
+  ],
+  "new_skin": "Comedy/Ao_hoa_quan_short",
+  "bones_unchanged": 64,
+  "ik_unchanged": 4,
+  "missing_images": [],
+  "roundtrip_original_animations_identical": true,
+  "roundtrip_bones_identical": true,
+  "roundtrip_ik_identical": true,
+  "spine_png_frames_rendered": 157,
+  "original_animation_snapshots_rendered": 3,
+  "project_sha256": "b7deb38b3dfe4847d6a514b05b32014a06e323c7c70a63e03d9593d7e4183ab4"
+}

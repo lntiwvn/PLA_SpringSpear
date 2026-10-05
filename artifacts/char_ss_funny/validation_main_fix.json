@@ -1,0 +1,10 @@
+{
+  "project": "C:\\pTSern\\SpringSpearPLA_x10\\artifacts\\char_ss_funny\\char_ss_test_dressed.spine",
+  "animation": "Comedy/06_idle_jump_4_ao_hoa",
+  "animation_count": 30,
+  "motion_identical_to_Final_idle_jump_4": true,
+  "all_previous_animations_preserved": true,
+  "rig_slots_skins_constraints_preserved": true,
+  "backup": "C:\\pTSern\\SpringSpearPLA_x10\\artifacts\\char_ss_funny\\char_ss_test_dressed_before_animation_fix.spine",
+  "candidate_sha256": "6348e12b1688f6f85a3852f1ac15eb50d488ac9a6b1fea39f090e94955e0e3fd"
+}

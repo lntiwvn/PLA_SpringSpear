@@ -1,0 +1,25 @@
+﻿BẢN CHỈNH SỬA NHÂN VẬT DƯA CHUỘT — SPINE 4.2.43
+
+Mở char_ss_test_dressed_jump4.spine, chọn skin Comedy/Ao_hoa_quan_short.
+Thư mục images phải ở cùng thư mục với file .spine.
+
+Trang phục: áo hoa màu cam có cổ và túi, quần short tím có dây rút,
+giày màu kem. Quần áo dùng mesh/bone của nhân vật để chuyển động theo rig.
+
+Animation mới:
+Comedy/01_mat_le          — mắt lé, răng hô
+Comedy/02_cuoi_deu        — mắt lim dim, cười đểu
+Comedy/03_le_luoi         — lè lưỡi, lắc người
+Comedy/04_cuoi_ban_no     — cười há miệng, rung người
+Comedy/05_doi_bieu_cam    — lần lượt đổi qua bốn biểu cảm
+Comedy/06_idle_jump_4_ao_hoa — giống toàn bộ diễn hoạt Final/idle_jump_4, mặc áo hoa
+
+24 animation Final/ và các skin gốc vẫn được giữ lại.
+Chọn Pickle/Normal hoặc Pickle/Blue để xem diện mạo cũ.
+
+original/ chứa file char_ss_test.spine và bộ ảnh gốc chưa chỉnh sửa.
+File trong Downloads được giữ nguyên; SHA-256 bản gốc và bản backup trùng nhau.
+preview.png là bảng biểu cảm. Các preview_*.gif được tạo từ ảnh Spine xuất.
+validation.json ghi kiểm tra cấu trúc và kết quả xuất/nhập bằng Spine.
+
+Bản trước khi thêm jump_4: char_ss_test_dressed_before_jump4.spine.

@@ -1,0 +1,9 @@
+{
+  "skin": "Comedy/Dua_xanh_bikini_da_bao",
+  "pupils_match_original_Pickle_Blue": true,
+  "screen_left_pupil_lower_screen_right_pupil_upper": true,
+  "all_30_animations_preserved": true,
+  "other_skins_and_rig_preserved": true,
+  "backup": "char_ss_test_dressed_before_pupil_fix.spine",
+  "candidate_sha256": "90fce03c66b2060f1267cadff4eda353a3a1b407ba486726dca9f41c6177283a"
+}
