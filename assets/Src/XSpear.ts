@@ -95,11 +95,9 @@ export class XSpear extends Component {
     protected readonly _stuckUpDirection: Vec2 = new Vec2(0, 1);
     protected readonly _dragTouchStart: Vec2 = new Vec2();
     protected readonly _dragFreeEndStart: Vec2 = new Vec2();
-    protected readonly _lastDragTouchDelta: Vec2 = new Vec2();
     protected _board: GameBoard = null;
     protected _didInitializeState: boolean = false;
     protected _laserTarget: XEnemy | null = null;
-    protected _lastDragRotationDirection: number = 0;
     protected _flightDistance: number = 0;
     protected _flightProgress: number = 0;
     protected _flightScaleElapsed: number = 0;
@@ -334,8 +332,10 @@ export class XSpear extends Component {
         this.compressAu?.play();
 
         this.changeState<XSpearChargingState>(XSpearStateId.Charging, [this.getAnim(XSpearStateId.Charging)]);
-        this.aimDirectAt(touchPos);
-        this.beginDrag(touchPos);
+        const localTouch = this._board.toNodePoint(touchPos, this.node.parent);
+        const localTouchPos = new Vec2(localTouch.x, localTouch.y);
+        this.aimDirectAt(localTouchPos);
+        this.beginDrag(localTouchPos);
     }
 
     public aimAt(touchPos: Vec2, _world: Vec2): void {
@@ -343,32 +343,16 @@ export class XSpear extends Component {
             return;
         }
 
+        const localTouch = this._board.toNodePoint(touchPos, this.node.parent);
+        const localTouchPos = new Vec2(localTouch.x, localTouch.y);
         const pinnedPos = this.getPinnedPosition();
-        const touchDelta = touchPos.clone().subtract(this._dragTouchStart);
-        if (this.shouldRebaseDrag(touchDelta)) {
-            this.rebaseDrag(touchPos);
-            return;
-        }
-
+        const touchDelta = localTouchPos.clone().subtract(this._dragTouchStart);
         const direction = this.getDragDirection(touchDelta, pinnedPos);
-        if (!direction || !this.isDirectionValid(direction)) {
-            return;
+        if (direction && this.isDirectionValid(direction)) {
+            this.applyAimDirection(direction);
         }
-
-        const laserOrigin = this.getHeadPosition();
-        const laserHit = XGameBridge.get()?.castLaser(laserOrigin, direction);
-        if (!laserHit) {
-            return;
-        }
-
-        const minAimDistance = this.spearLength * 0.5;
-        const aimDistance = Vec2.distance(laserOrigin, laserHit.point);
-        if (aimDistance <= minAimDistance) {
-            return;
-        }
-
-        this.applyAimDirection(direction);
-        this._lastDragTouchDelta.set(touchDelta.x, touchDelta.y);
+        // Consume each movement so reversing at an aim limit responds immediately.
+        this.beginDrag(localTouchPos);
     }
 
     public release(): void {
@@ -499,6 +483,18 @@ export class XSpear extends Component {
 
         const previousHeadWorld = this.getHeadWorldPosition();
         const previousHeadBoard = this._board.toBoardPoint(previousHeadWorld);
+        this._board.updateBounds();
+        if (!this._board.containsPoint(previousHeadBoard)) {
+            const edgePoint = this._board.clampPoint(previousHeadBoard);
+            const inward = new Vec2(-edgePoint.x, -edgePoint.y);
+            if (edgePoint.x <= this._board.minX) inward.set(1, 0);
+            else if (edgePoint.x >= this._board.maxX) inward.set(-1, 0);
+            else if (edgePoint.y <= this._board.minY) inward.set(0, 1);
+            else inward.set(0, -1);
+            this.pinToEdge(edgePoint, inward);
+            this.onPinned?.();
+            return null;
+        }
         const moveDistance = this.getFlightMoveDistance(dt);
         const reflectionHitAhead = XGameBridge.get()?.findReflectionHitForDirection(previousHeadBoard, this._flyDirection, moveDistance + 0.0001);
         const wallHitAhead = this.getWallHitForDirection(previousHeadBoard, this._flyDirection, moveDistance + 0.0001);
@@ -509,18 +505,16 @@ export class XSpear extends Component {
             firstHitKind = "reflection";
             firstHitDistance = reflectionHitAhead.distance;
         }
-        if (wallHitAhead && wallHitAhead.distance < firstHitDistance) {
+        if (wallHitAhead && wallHitAhead.distance <= firstHitDistance) {
             firstHitKind = "wall";
             firstHitDistance = wallHitAhead.distance;
         }
         const travelDistance = Math.max(0, Math.min(moveDistance, firstHitDistance));
 
-        const pos = this.node.getPosition();
-        this.node.setPosition(
-            pos.x + this._flyDirection.x * travelDistance,
-            pos.y + this._flyDirection.y * travelDistance,
-            0,
-        );
+        const boardPosition = this.getPinnedBoardPosition();
+        boardPosition.add(this._flyDirection.clone().multiplyScalar(travelDistance));
+        const parentPosition = this._board.toNodePoint(boardPosition, this.node.parent);
+        this.node.setPosition(parentPosition.x, parentPosition.y, parentPosition.z);
         this.syncCollider();
         this._previousHeadWorldPosition.set(previousHeadWorld.x, previousHeadWorld.y, previousHeadWorld.z);
         if (firstHitKind === "reflection" && reflectionHitAhead) {
@@ -641,55 +635,15 @@ export class XSpear extends Component {
 
     protected beginDrag(touchPos: Vec2): void {
         this._dragTouchStart.set(touchPos.x, touchPos.y);
-        const freeEnd = this.getFreeEndPosition();
+        const headWorld = this.getHeadWorldPosition();
+        const freeEnd = this.node.parent
+            ? this.node.parent.inverseTransformPoint(new Vec3(), headWorld) : headWorld;
         this._dragFreeEndStart.set(freeEnd.x, freeEnd.y);
-        this.resetDragState();
     }
 
     protected resetDragState(): void {
-        this._lastDragRotationDirection = 0;
-        this._lastDragTouchDelta.set(0, 0);
-    }
-
-    protected shouldRebaseDrag(touchDelta: Vec2): boolean {
-        const rebaseEpsilon = 0.0005;
-        const xFlip = Math.abs(touchDelta.x) > rebaseEpsilon
-            && Math.abs(this._lastDragTouchDelta.x) > rebaseEpsilon
-            && Math.sign(touchDelta.x) !== Math.sign(this._lastDragTouchDelta.x);
-        const yFlip = Math.abs(touchDelta.y) > rebaseEpsilon
-            && Math.abs(this._lastDragTouchDelta.y) > rebaseEpsilon
-            && Math.sign(touchDelta.y) !== Math.sign(this._lastDragTouchDelta.y);
-        if (xFlip || yFlip) {
-            return true;
-        }
-
-        const direction = this.getDragDirection(touchDelta, this.getPinnedPosition());
-        if (!direction) {
-            return false;
-        }
-
-        const targetAngle = math.toDegree(Math.atan2(-direction.x, direction.y));
-        const desiredDelta = this.deltaAngle(this.node.angle, targetAngle);
-        if (Math.abs(desiredDelta) <= 0.0001) {
-            return false;
-        }
-
-        const desiredDirection = Math.sign(desiredDelta);
-        const didFlipRotationDirection = this._lastDragRotationDirection !== 0
-            && desiredDirection !== this._lastDragRotationDirection;
-        if (didFlipRotationDirection) {
-            return true;
-        }
-
-        this._lastDragRotationDirection = desiredDirection;
-        return false;
-    }
-
-    protected rebaseDrag(touchPos: Vec2): void {
-        this._dragTouchStart.set(touchPos.x, touchPos.y);
-        const freeEnd = this.getFreeEndPosition();
-        this._dragFreeEndStart.set(freeEnd.x, freeEnd.y);
-        this.resetDragState();
+        this._dragTouchStart.set(0, 0);
+        this._dragFreeEndStart.set(0, 0);
     }
 
     protected getDragDirection(touchDelta: Vec2, pinnedPos: Vec2): Vec2 | null {
@@ -829,17 +783,6 @@ export class XSpear extends Component {
         );
     }
 
-    protected deltaAngle(current: number, target: number): number {
-        let delta = (target - current) % 360;
-        if (delta > 180) {
-            delta -= 360;
-        } else if (delta < -180) {
-            delta += 360;
-        }
-
-        return delta;
-    }
-
     protected pointToSegmentDistance(point: Vec2, segA: Vec2, segB: Vec2): number {
         const dx = segB.x - segA.x;
         const dy = segB.y - segA.y;
@@ -963,7 +906,10 @@ export class XSpear extends Component {
             return null;
         }
 
-        const hit = this._board.raycastWall(origin, direction, maxDistance);
+        const wallHit = this._board.raycastWall(origin, direction, maxDistance);
+        const boundaryHit = this._board.raycastBoundary(origin, direction, maxDistance);
+        const hit = boundaryHit && (!wallHit || boundaryHit.distance <= wallHit.distance)
+            ? boundaryHit : wallHit;
         if (!hit) {
             return null;
         }

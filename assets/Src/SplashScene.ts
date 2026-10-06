@@ -2,8 +2,6 @@ import { _decorator, Node, UIOpacity } from "cc";
 import { Component } from "cc";
 import Easing from "./Easing";
 import { TweenEasing } from "cc";
-import { Tween } from "cc";
-import { tween } from "cc";
 import { Prefab } from "cc";
 import { instantiate } from "cc";
 
@@ -32,15 +30,20 @@ export class SplashScene extends Component {
     @property(Prefab)
     nextLevel: Prefab = null
 
+    @property({ type: Prefab, tooltip: "Previous level prefab to load when transitioning. Takes priority over Next Level." })
+    previousLevel: Prefab = null;
+
     @property(Node)
     off: Node = null;
 
     @property(Node)
     root: Node = null
 
+    private _transitionPending: boolean = false;
+
     protected start(): void {
         this.list.forEach(_ => _.active = false);
-        this.opx.opacity = 0;
+        if (this.opx) this.opx.opacity = 0;
     }
 
     transWithDelay(dur: number | string) {
@@ -49,23 +52,20 @@ export class SplashScene extends Component {
     }
 
     trans() {
+        const levelPrefab = this.previousLevel ?? this.nextLevel;
+        if (this._transitionPending || !levelPrefab || !this.root?.isValid) return;
+        this._transitionPending = true;
         this.list.forEach(_ => _.active = true);
-
-        this.scheduleOnce( () => {
-
-                        this.off.active = false;
-                        const _node = instantiate(this.nextLevel)
-                        this.root.addChild(_node);
-        }, this.delay )
-        //tween(this.opx).to(this.duration, { opacity: 255 }, { easing: this.easingIn })
-        //            .call( () => {
-        //                this.off.active = false;
-        //                const _node = instantiate(this.nextLevel)
-        //                this.root.addChild(_node);
-        //            } )
-        //            .delay(this.delay)
-        //            .to(this.duration, { opacity: 0 }, { easing: this.easingIn })
-        //            .start();
-
+        this.scheduleOnce(() => {
+            if (!this.root?.isValid) {
+                this._transitionPending = false;
+                return;
+            }
+            const levelNode = instantiate(levelPrefab);
+            if (this.off?.isValid) this.off.active = false;
+            this.root.addChild(levelNode);
+            this.off = levelNode;
+            this._transitionPending = false;
+        }, this.delay);
     }
 }

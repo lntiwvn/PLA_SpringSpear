@@ -105,6 +105,36 @@ export class GameBoard extends Component {
             && pos.y >= this.minY && pos.y <= this.maxY;
     }
 
+    /** Safety boundary even when a wall collider is missing or has not synced yet. */
+    public raycastBoundary(origin: Vec2, direction: Vec2, maxDistance: number = Infinity): { point: Vec2; normal: Vec2; distance: number } | null {
+        this.updateBounds();
+        if (this.width <= 0 || this.height <= 0 || direction.lengthSqr() <= 0.0001) {
+            return null;
+        }
+
+        const dir = direction.clone().normalize();
+        const edges = [
+            { axis: "x", value: this.minX, normal: new Vec2(1, 0) },
+            { axis: "x", value: this.maxX, normal: new Vec2(-1, 0) },
+            { axis: "y", value: this.minY, normal: new Vec2(0, 1) },
+            { axis: "y", value: this.maxY, normal: new Vec2(0, -1) },
+        ];
+        let closest: { point: Vec2; normal: Vec2; distance: number } | null = null;
+        for (const edge of edges) {
+            // Only stop rays leaving the board, including a hit exactly at the origin.
+            if (Vec2.dot(dir, edge.normal) >= 0) continue;
+            const distance = (edge.value - origin[edge.axis]) / dir[edge.axis];
+            if (distance < -0.001 || distance > maxDistance) continue;
+            const point = origin.clone().add(dir.clone().multiplyScalar(Math.max(0, distance)));
+            if (point.x < this.minX - 0.001 || point.x > this.maxX + 0.001
+                || point.y < this.minY - 0.001 || point.y > this.maxY + 0.001) continue;
+            if (!closest || distance < closest.distance) {
+                closest = { point, normal: edge.normal, distance: Math.max(0, distance) };
+            }
+        }
+        return closest;
+    }
+
     /**
      * Raycast from origin in direction, return the intersection point with board edge.
      * Returns the point where the ray exits the board rectangle.

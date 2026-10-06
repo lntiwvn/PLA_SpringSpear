@@ -78,7 +78,7 @@ export class XGameController extends Component {
 
     protected _onOneTouchStart() {
         for(const _sp of this._spear.values()) {
-            _sp.startCharge(_sp.getLocalUp());
+            _sp.startCharge(_sp.getHeadPosition());
         }
     }
 
