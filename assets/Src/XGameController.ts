@@ -1,4 +1,4 @@
-import { _decorator, CCInteger, Collider2D, Component, ERaycast2DType, EventHandler, EventTouch, Label, Node, PhysicsSystem2D, UIOpacity, Vec2, Vec3, UITransform, v2 } from "cc";
+import { _decorator, BoxCollider2D, PolygonCollider2D, CCInteger, Collider2D, Component, ERaycast2DType, EventHandler, EventTouch, Input, input, Label, Node, PhysicsSystem2D, UIOpacity, Vec2, Vec3, UITransform, v2 } from "cc";
 import { GameBoard } from "./GameBoard";
 import XGameBridge, { XEnemyHitData, XGameLaserHit, XGameLaserPath, XGameReflectionHit } from "./XGameBridge";
 import { XEnemy, XEnemyStateId } from "./XEnemy";
@@ -6,6 +6,7 @@ import XGameObserver from "./XGameObserver";
 import { XSpear, XSpearStateId } from "./XSpear";
 import { ReflectionSpear } from "./ReflectionSpear";
 import { ClonerSpear } from "./ClonerSpear";
+import { TutHandDisableOnClick } from "./TutHandDisableOnClick";
 
 const { ccclass, property } = _decorator;
 
@@ -46,6 +47,12 @@ export class XGameController extends Component {
     @property([EventHandler])
     public storeEvents: EventHandler[] = [];
 
+    @property({ type: Node, tooltip: "Canvas that captures store taps before gameplay and UI consume them." })
+    public storeTapArea: Node = null;
+
+    @property({ type: CCInteger, min: 1, tooltip: "Main level: the next tap opens the store after this many kills." })
+    public storeTapKillThreshold: number = 3;
+
     public onLevelRetry: (() => void) | null = null;
     public throwsUsed: number = 0;
     public storeKillTarget: number = 0;
@@ -70,6 +77,7 @@ export class XGameController extends Component {
     protected _spear: Map<string, XSpear> = new Map();
 
     public setLevel(level: Node, storeKillTarget: number = 0): void {
+        this.bindLevelHandHints(level);
         this._spear.clear();
         this._didInvokeEveryEnemyDie = false;
         this.enemies = level.getComponentsInChildren(XEnemy);
@@ -78,6 +86,22 @@ export class XGameController extends Component {
         for (const spear of level.getComponentsInChildren(XSpear)) {
             if (spear.enabledInHierarchy) this.addSpear(spear);
         }
+    }
+
+    protected bindLevelHandHints(level: Node): void {
+        const hands: Node[] = [];
+        const visit = (node: Node) => {
+            if (node.name === "iconHand") hands.push(node);
+            node.children.forEach(visit);
+        };
+        visit(level);
+        if (!hands.length) return;
+        // Register on the level root so animation events cannot revive an understood hint.
+        const hint = level.getComponent(TutHandDisableOnClick) ?? level.addComponent(TutHandDisableOnClick);
+        level.getComponentsInChildren(TutHandDisableOnClick).forEach(component => component.enabled = false);
+        hint.useGlobalTouch = true;
+        hint.nodes = hands;
+        hint.enabled = true;
     }
 
     protected resetRound(): void {
@@ -93,14 +117,28 @@ export class XGameController extends Component {
     }
 
     protected refreshRoundUI(): void {
-        if (this.killCounter) this.killCounter.string = `${this.deadCount}/${this.storeKillTarget || this.enemies.length}`;
+        const displayedKills = this.storeKillTarget > 0 ? Math.min(this.deadCount, this.storeKillTarget) : this.deadCount;
+        if (this.killCounter) this.killCounter.string = `${displayedKills}/${this.storeKillTarget || this.enemies.length}`;
         this.throwIcons.forEach((icon, index) => {
             if (icon) icon.opacity = index < this.throwLimit - this.throwsUsed ? 255 : 45;
         });
     }
 
     protected canStartThrow(): boolean {
-        return this._outcome === "playing" && !this._shotInFlight && this.throwsUsed < this.throwLimit;
+        return this._outcome === "playing" && !this.isStoreTapReady()
+            && !this._shotInFlight && this.throwsUsed < this.throwLimit;
+    }
+
+    protected isStoreTapReady(): boolean {
+        return this.storeKillTarget > 0 && this.deadCount >= Math.max(1, this.storeTapKillThreshold);
+    }
+
+    protected onStoreTouchStart(event?: EventTouch): void {
+        if (!this.enabledInHierarchy || this._outcome !== "playing" || !this.isStoreTapReady()) return;
+        this._outcome = "store";
+        // Keep the CTA tap from also starting gameplay or clicking a child button.
+        if (event) event.propagationStopped = true;
+        EventHandler.emitEvents(this.storeEvents);
     }
 
     protected lateUpdate(): void {
@@ -110,7 +148,7 @@ export class XGameController extends Component {
         if (isFlying) return;
         this._shotInFlight = false;
         this.invokeEveryEnemyDieIfNeeded();
-        if (this._outcome === "playing" && this.throwsUsed >= this.throwLimit) {
+        if (this._outcome === "playing" && !this.isStoreTapReady() && this.throwsUsed >= this.throwLimit) {
             this._outcome = "lost";
             if (this.losePopup) this.losePopup.active = true;
         }
@@ -129,6 +167,10 @@ export class XGameController extends Component {
     }
 
     protected start(): void {
+        if (this.storeTapArea) {
+            this.storeTapArea.on(Node.EventType.TOUCH_START, this.onStoreTouchStart, this, true);
+        }
+        input.on(Input.EventType.TOUCH_START, this.onStoreTouchStart, this);
         this.gameBoard.node.on(Node.EventType.TOUCH_END, this.onTouchEnd, this);
 
         if(this.isAllowDrag) {
@@ -160,6 +202,10 @@ export class XGameController extends Component {
     }
 
     protected onDestroy(): void {
+        if (this.storeTapArea) {
+            this.storeTapArea.off(Node.EventType.TOUCH_START, this.onStoreTouchStart, this, true);
+        }
+        input.off(Input.EventType.TOUCH_START, this.onStoreTouchStart, this);
         this._observerDisposers.forEach((_dispose) => _dispose());
         this._observerDisposers.length = 0;
 
@@ -214,27 +260,21 @@ export class XGameController extends Component {
     }
 
     public findSpearHit(spear: XSpear): { enemy: XEnemy; kind: "body" | "balloon" } | null {
-        spear.refreshIgnoredColliders(this.enemies);
-        const shaftHit = this.findEnemyHitAlongSegmentBoard(
-            spear.getPinnedBoardPosition(),
-            spear.getFreeEndBoardPosition(),
-            spear,
-        );
-        if (shaftHit) {
-            return shaftHit;
-        }
-
-        const previousHeadBoard = this.gameBoard.toBoardPoint(spear.getPreviousHeadWorldPosition());
-        const currentHeadBoard = spear.getHeadPosition();
-        return this.findEnemyHitAlongSegmentBoard(
-            previousHeadBoard,
-            currentHeadBoard,
-            spear,
-        );
+        return this.findSpearHits(spear)[0] ?? null;
     }
 
-    public captureSpearLaunchOverlaps(spear: XSpear): void {
-        spear.captureIgnoredColliders(this.enemies);
+    public findSpearHits(spear: XSpear): Array<{ enemy: XEnemy; kind: "body" | "balloon" }> {
+        const segments = spear.getFlightHitSegments();
+        const hits: Array<{ enemy: XEnemy; kind: "body" | "balloon" }> = [];
+        for (const enemy of this.enemies) {
+            if (enemy.isDamageImmune() || enemy.stateMachine.cid === null || enemy.stateMachine.cid === XEnemyStateId.Dead) continue;
+            const intersects = (collider: Collider2D | null) => collider?.enabledInHierarchy
+                && segments.some(segment => this.segmentIntersectsCollider(segment.from, segment.to, collider));
+            // A body hit wins over a balloon hit for the same enemy.
+            if (intersects(enemy.getBodyCollider())) hits.push({ enemy, kind: "body" });
+            else if (intersects(enemy.getBalloonCollider())) hits.push({ enemy, kind: "balloon" });
+        }
+        return hits;
     }
 
     public tryCloneSpear(spear: XSpear): void {
@@ -315,70 +355,54 @@ export class XGameController extends Component {
         };
     }
 
-    public castLaser(origin: Vec2, direction: Vec2): XGameLaserHit | null {
+    public castLaser(origin: Vec2, direction: Vec2, maxDistance: number = Number.POSITIVE_INFINITY): XGameLaserHit | null {
+        if (direction.lengthSqr() <= 0.0001) return null;
         const boardHit = this.findClosestBoardHit(origin, direction, true);
-        if (!boardHit) {
-            return null;
-        }
-        let closestHit: XGameLaserHit = { enemy: null, point: boardHit.point };
-        let closestDistance = boardHit.distance;
-
+        if (!boardHit) return null;
+        const distance = Math.min(boardHit.distance, Math.max(0, maxDistance));
+        const point = origin.clone().add(direction.clone().normalize().multiplyScalar(distance));
+        const hits: { enemy: XEnemy; distance: number }[] = [];
         for (const enemy of this.enemies) {
             const bodyCollider = enemy.getBodyCollider();
-            if (!bodyCollider?.enabledInHierarchy) {
-                continue;
-            }
-
-            const hitPoint = this.raycastBoardRect(origin, direction, this.getColliderBoardRect(bodyCollider));
-            if (!hitPoint) {
-                continue;
-            }
-
-            const distance = Vec2.distance(origin, hitPoint);
-            if (distance < closestDistance) {
-                closestDistance = distance;
-                closestHit = {
-                    enemy,
-                    point: hitPoint,
-                };
-            }
+            if (!bodyCollider?.enabledInHierarchy) continue;
+            const hit = this.raycastBoardRectHit(origin, direction, this.getColliderBoardRect(bodyCollider), distance);
+            if (hit) hits.push({ enemy, distance: hit.distance });
         }
-
-        return closestHit;
+        hits.sort((a, b) => a.distance - b.distance);
+        const enemies = hits.map(hit => hit.enemy);
+        // Bodies are targets, so the preview continues through them up to the wall.
+        return { enemy: enemies[0] ?? null, enemies, point };
     }
 
     public castLaserPath(origin: Vec2, direction: Vec2): XGameLaserPath | null {
-        const directHit = this.castLaser(origin, direction);
-        if (!directHit) {
-            return null;
+        if (direction.lengthSqr() <= 0.0001) return null;
+        const segments: XGameLaserPath["segments"] = [];
+        let from = origin.clone(), dir = direction.clone().normalize();
+        let reflectionPoint: Vec2 | null = null;
+        // Match consecutive mirrors while keeping the preview bounded in a mirror loop.
+        for (let bounce = 0; bounce < 8; bounce++) {
+            const wallHit = this.castLaser(from, dir);
+            if (!wallHit) break;
+            const distance = Vec2.distance(from, wallHit.point);
+            const mirror = this.findReflectionHit(from, dir, distance);
+            if (!mirror || mirror.distance >= distance - 0.0001) {
+                segments.push({ from, to: wallHit.point, enemies: wallHit.enemies });
+                break;
+            }
+            const hit = this.castLaser(from, dir, mirror.distance);
+            segments.push({ from, to: mirror.point, enemies: hit?.enemies ?? [] });
+            reflectionPoint ??= mirror.point;
+            dir = ReflectionSpear.reflectDirection(dir, mirror.normal);
+            from = mirror.point.clone().add(dir.clone().multiplyScalar(0.5));
         }
-
-        const reflectionHit = this.findReflectionHit(origin, direction);
-        const directDistance = Vec2.distance(origin, directHit.point);
-        if (!reflectionHit || directDistance <= reflectionHit.distance + 0.0001) {
-            return {
-                enemy: directHit.enemy,
-                point: directHit.point,
-                reflectionPoint: null,
-            };
-        }
-
-        const reflectedDirection = ReflectionSpear.reflectDirection(direction, reflectionHit.normal);
-        const reflectedOrigin = reflectionHit.point.clone().add(reflectedDirection.clone().multiplyScalar(0.5));
-        const reflectedHit = this.castLaser(reflectedOrigin, reflectedDirection);
-        if (!reflectedHit) {
-            return {
-                enemy: directHit.enemy,
-                point: directHit.point,
-                reflectionPoint: null,
-            };
-        }
-
-        return {
-            enemy: reflectedHit.enemy,
-            point: reflectedHit.point,
-            reflectionPoint: reflectionHit.point,
-        };
+        if (!segments.length) return null;
+        const directEnemies = segments[0].enemies;
+        const reflectedTargets: XEnemy[] = [];
+        segments.slice(1).forEach(segment => reflectedTargets.push(...segment.enemies));
+        const reflectedEnemies = Array.from(new Set(reflectedTargets));
+        const enemies = Array.from(new Set([...directEnemies, ...reflectedEnemies]));
+        return { segments, enemies, directEnemies, reflectedEnemies, enemy: enemies[0] ?? null,
+            point: segments[segments.length - 1].to, reflectionPoint };
     }
 
     public findReflectionHitAlongSegment(from: Vec2, to: Vec2): XGameReflectionHit | null {
@@ -391,36 +415,56 @@ export class XGameController extends Component {
         return this.findReflectionHit(from, direction, maxDistance + 0.0001);
     }
 
-    protected findEnemyHitAlongSegmentBoard(from: Vec2, to: Vec2, spear: XSpear): { enemy: XEnemy; kind: "body" | "balloon" } | null {
-        for (const enemy of this.enemies) {
-            if (enemy.stateMachine.cid === null) {
-                continue;
-            }
-
-            const bodyCollider = enemy.getBodyCollider();
-            if (
-                bodyCollider?.enabledInHierarchy
-                && !spear.shouldIgnoreCollider(bodyCollider)
-                && this.segmentIntersectsRect(from, to, this.getColliderBoardRect(bodyCollider))
-            ) {
-                return { enemy, kind: "body" };
-            }
-
-            const balloonCollider = enemy.getBalloonCollider();
-            if (
-                balloonCollider?.enabledInHierarchy
-                && !spear.shouldIgnoreCollider(balloonCollider)
-                && this.segmentIntersectsRect(from, to, this.getColliderBoardRect(balloonCollider))
-            ) {
-                return { enemy, kind: "balloon" };
-            }
+    protected getColliderBoardPolygon(collider: Collider2D): Vec2[] | null {
+        let points: Vec2[];
+        if (collider instanceof BoxCollider2D) {
+            if (collider.size.width <= 0 || collider.size.height <= 0) return [];
+            const halfWidth = collider.size.width * 0.5;
+            const halfHeight = collider.size.height * 0.5;
+            points = [new Vec2(-halfWidth, -halfHeight), new Vec2(halfWidth, -halfHeight),
+                new Vec2(halfWidth, halfHeight), new Vec2(-halfWidth, halfHeight)];
+        } else if (collider instanceof PolygonCollider2D) {
+            if (collider.points.length < 3) return [];
+            points = collider.points;
+        } else {
+            return null;
         }
+        return points.map(point => this.gameBoard.fromNodePoint(
+            new Vec2(point.x + collider.offset.x, point.y + collider.offset.y), collider.node));
+    }
 
-        return null;
+    protected segmentIntersectsCollider(from: Vec2, to: Vec2, collider: Collider2D): boolean {
+        const points = this.getColliderBoardPolygon(collider);
+        if (points === null) return this.segmentIntersectsRect(from, to, this.getColliderBoardRect(collider));
+        if (points.length < 3) return false;
+        if (this.isPointInsidePolygon(from, points) || this.isPointInsidePolygon(to, points)) return true;
+        return points.some((point, index) => this.segmentsIntersect(from, to,
+            point, points[(index + 1) % points.length]));
+    }
+
+    protected isPointInsidePolygon(point: Vec2, points: Vec2[]): boolean {
+        let inside = false;
+        for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+            const a = points[j], b = points[i];
+            if (this.cross(a, b, point) === 0 && this.onSegment(a, b, point)) return true;
+            if ((a.y > point.y) !== (b.y > point.y)
+                && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+        }
+        return inside;
     }
 
     protected getColliderBoardRect(collider: Collider2D): { x: number; y: number; width: number; height: number } {
+        const points = this.getColliderBoardPolygon(collider);
+        if (points !== null) {
+            if (points.length < 3) return { x: 0, y: 0, width: 0, height: 0 };
+            const xs = points.map(point => point.x), ys = points.map(point => point.y);
+            return { x: Math.min(...xs), y: Math.min(...ys),
+                width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
+        }
         const aabb = collider.worldAABB;
+        // Empty physics shapes can expose inverted bounds with enormous sentinel coordinates.
+        if (!aabb || !Number.isFinite(aabb.width) || !Number.isFinite(aabb.height)
+            || aabb.width <= 0 || aabb.height <= 0) return { x: 0, y: 0, width: 0, height: 0 };
         const min = this.gameBoard.toBoardPoint(new Vec3(aabb.xMin, aabb.yMin, 0));
         const max = this.gameBoard.toBoardPoint(new Vec3(aabb.xMax, aabb.yMax, 0));
         return {
@@ -446,6 +490,7 @@ export class XGameController extends Component {
         rect: { x: number; y: number; width: number; height: number },
         maxDistance: number = Number.POSITIVE_INFINITY,
     ): { point: Vec2; normal: Vec2; distance: number } | null {
+        if (rect.width <= 0 || rect.height <= 0) return null;
         const dir = direction.clone();
         if (dir.lengthSqr() <= 0.0001) {
             return null;
@@ -526,6 +571,7 @@ export class XGameController extends Component {
     }
 
     protected segmentIntersectsRect(segA: Vec2, segB: Vec2, rect: { x: number; y: number; width: number; height: number }): boolean {
+        if (rect.width <= 0 || rect.height <= 0) return false;
         const minX = rect.x;
         const maxX = rect.x + rect.width;
         const minY = rect.y;
@@ -587,7 +633,7 @@ export class XGameController extends Component {
             return null;
         }
 
-        const reflectionIds = new Set(activeReflectionColliders.map((_collider) => _collider.uuid));
+        const reflectionIds = new Set(activeReflectionColliders.filter(collider => !(collider instanceof BoxCollider2D)).map(collider => collider.uuid));
         const normalizedDirection = direction.clone().normalize();
         const maxDistanceSafe = Number.isFinite(maxDistance)
             ? Math.max(0, maxDistance)
@@ -599,16 +645,37 @@ export class XGameController extends Component {
             origin.y + normalizedDirection.y * maxDistanceSafe,
         );
         const toWorld = this.gameBoard.toWorldPoint(toBoard);
+        let closestHit: (XGameReflectionHit & { collider: Collider2D }) | null = null;
+        // Box mirrors use their current node transform, independent of physics sync.
+        for (const collider of activeReflectionColliders) {
+            if (!(collider instanceof BoxCollider2D)) continue;
+            const localOrigin3 = collider.node.inverseTransformPoint(new Vec3(), fromWorld);
+            const localEnd3 = collider.node.inverseTransformPoint(new Vec3(), toWorld);
+            const localOrigin = new Vec2(localOrigin3.x, localOrigin3.y);
+            const localDirection = new Vec2(localEnd3.x - localOrigin3.x, localEnd3.y - localOrigin3.y);
+            const hit = this.raycastBoardRectHit(localOrigin, localDirection, {
+                x: collider.offset.x - collider.size.width * 0.5,
+                y: collider.offset.y - collider.size.height * 0.5,
+                width: collider.size.width, height: collider.size.height,
+            }, localDirection.length());
+            if (!hit) continue;
+            const point = this.gameBoard.fromNodePoint(hit.point, collider.node);
+            const distance = Vec2.distance(origin, point);
+            if (distance <= 0.0001 || distance > maxDistanceSafe + 0.0001) continue;
+            const tangentPoint = this.gameBoard.fromNodePoint(new Vec2(
+                hit.point.x - hit.normal.y, hit.point.y + hit.normal.x), collider.node);
+            const tangent = tangentPoint.subtract(point).normalize();
+            const normal = new Vec2(-tangent.y, tangent.x);
+            if (Vec2.dot(normal, normalizedDirection) > 0) normal.multiplyScalar(-1);
+            if (!closestHit || distance < closestHit.distance) closestHit = { point, normal, distance, collider };
+        }
+        if (!reflectionIds.size) return closestHit;
         const hits = PhysicsSystem2D.instance.raycast(
             v2(fromWorld.x, fromWorld.y),
             v2(toWorld.x, toWorld.y),
             ERaycast2DType.AllClosest,
         );
-        if (hits.length <= 0) {
-            return null;
-        }
-
-        let closestHit: (XGameReflectionHit & { collider: Collider2D }) | null = null;
+        if (hits.length <= 0) return closestHit;
         for (const hit of hits) {
             const collider = hit.collider;
             if (!collider || !reflectionIds.has(collider.uuid)) {
@@ -691,7 +758,8 @@ export class XGameController extends Component {
     }
 
     protected onEnemyDead(enemy: XEnemy, _spear: XSpear): void {
-        if (this._outcome !== "playing" || !this.enemies.includes(enemy)) return;
+        // Spears already in flight finish their hits while the next tap is waiting for CTA.
+        if ((this._outcome !== "playing" && this._outcome !== "store") || !this.enemies.includes(enemy) || enemy.isDamageImmune()) return;
         const hitData = this.resolveEnemyHitData(enemy, _spear);
         const didChange = enemy.enterDead(hitData.splitKind, hitData.hitDirection);
         if (!didChange) {
@@ -699,11 +767,7 @@ export class XGameController extends Component {
         }
 
         this.refreshRoundUI();
-        if (this.storeKillTarget > 0 && this.deadCount >= this.storeKillTarget) {
-            this._outcome = "store";
-            EventHandler.emitEvents(this.storeEvents);
-            return;
-        }
+        if (this._outcome !== "playing") return;
         this.invokeEveryEnemyDieIfNeeded();
     }
 
@@ -716,7 +780,7 @@ export class XGameController extends Component {
     }
 
     protected invokeEveryEnemyDieIfNeeded(): void {
-        if (this._outcome !== "playing" || this._didInvokeEveryEnemyDie || this.enemies.length <= 0) {
+        if (this._outcome !== "playing" || this.isStoreTapReady() || this._didInvokeEveryEnemyDie || this.enemies.length <= 0) {
             return;
         }
 

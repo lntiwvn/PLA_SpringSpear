@@ -105,6 +105,63 @@ export class GameBoard extends Component {
             && pos.y >= this.minY && pos.y <= this.maxY;
     }
 
+    /** All inward directions touching the pivot, including both faces at a corner. */
+    public getAimContactNormals(point: Vec2): Vec2[] {
+        this.updateBounds();
+        const tolerance = 0.5;
+        const normals: Vec2[] = [];
+        const wallRects = this.walls.filter(wall => wall?.enabledInHierarchy).map(wall => this.getColliderBoardRect(wall));
+        const add = (normal: Vec2) => {
+            // Ignore the end face of a frame wall when it points outside the board.
+            const probe = point.clone().add(normal.clone().multiplyScalar(tolerance + 0.001));
+            if (probe.x < this.minX - 0.001 || probe.x > this.maxX + 0.001
+                || probe.y < this.minY - 0.001 || probe.y > this.maxY + 0.001) return;
+            if (wallRects.some(rect => probe.x > rect.x + 0.001 && probe.x < rect.x + rect.width - 0.001
+                && probe.y > rect.y + 0.001 && probe.y < rect.y + rect.height - 0.001)) return;
+            if (!normals.some(value => Vec2.dot(value, normal) > 0.9999)) normals.push(normal);
+        };
+        if (point.x <= this.minX + tolerance) add(new Vec2(1, 0));
+        if (point.x >= this.maxX - tolerance) add(new Vec2(-1, 0));
+        if (point.y <= this.minY + tolerance) add(new Vec2(0, 1));
+        if (point.y >= this.maxY - tolerance) add(new Vec2(0, -1));
+        for (const rect of wallRects) {
+            const xMax = rect.x + rect.width, yMax = rect.y + rect.height;
+            if (point.y >= rect.y - tolerance && point.y <= yMax + tolerance) {
+                if (Math.abs(point.x - rect.x) <= tolerance) add(new Vec2(-1, 0));
+                if (Math.abs(point.x - xMax) <= tolerance) add(new Vec2(1, 0));
+            }
+            if (point.x >= rect.x - tolerance && point.x <= xMax + tolerance) {
+                if (Math.abs(point.y - rect.y) <= tolerance) add(new Vec2(0, -1));
+                if (Math.abs(point.y - yMax) <= tolerance) add(new Vec2(0, 1));
+            }
+        }
+        return normals;
+    }
+
+    /** Touching a wall is allowed while aiming; passing through its interior is not. */
+    public isAimSegmentBlocked(from: Vec2, to: Vec2): boolean {
+        this.updateBounds();
+        const epsilon = 0.001;
+        if (to.x < this.minX - epsilon || to.x > this.maxX + epsilon
+            || to.y < this.minY - epsilon || to.y > this.maxY + epsilon) return true;
+        const direction = to.clone().subtract(from);
+        const distance = direction.length();
+        if (distance <= epsilon) return false;
+        direction.multiplyScalar(1 / distance);
+        for (const wall of this.walls) {
+            if (!wall?.enabledInHierarchy) continue;
+            const rect = this.getColliderBoardRect(wall);
+            const inset = { x: rect.x + epsilon, y: rect.y + epsilon,
+                width: rect.width - 2 * epsilon, height: rect.height - 2 * epsilon };
+            if (inset.width <= 0 || inset.height <= 0) continue;
+            // A pivot embedded slightly in its supporting wall may aim back out of it.
+            if (from.x > inset.x && from.x < inset.x + inset.width
+                && from.y > inset.y && from.y < inset.y + inset.height) continue;
+            if (this.raycastBoardRect(from, direction, inset, distance)) return true;
+        }
+        return false;
+    }
+
     /** Safety boundary even when a wall collider is missing or has not synced yet. */
     public raycastBoundary(origin: Vec2, direction: Vec2, maxDistance: number = Infinity): { point: Vec2; normal: Vec2; distance: number } | null {
         this.updateBounds();

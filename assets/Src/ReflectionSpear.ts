@@ -15,7 +15,7 @@ export class ReflectionSpear extends Component {
 
     protected onEnable(): void {
         ReflectionSpear._instances.add(this);
-        this.mirrorCollider.apply();
+        this.mirrorCollider?.apply();
     }
 
     protected onDisable(): void {

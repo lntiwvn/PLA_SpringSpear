@@ -1,10 +1,12 @@
-import { _decorator, CCInteger, Node, UIOpacity } from "cc";
+import { _decorator, AudioSource, Node, UIOpacity } from "cc";
 import { Component } from "cc";
 import Easing from "./Easing";
 import { TweenEasing } from "cc";
 import { Prefab } from "cc";
 import { instantiate } from "cc";
 import { XGameController } from "./XGameController";
+import { XEnemy } from "./XEnemy";
+import { ConfettiManager } from "../Asset/VFX nonogram/Script/ConfettiManager";
 
 const { ccclass, property, executionOrder } = _decorator;
 
@@ -22,6 +24,9 @@ export class SplashScene extends Component {
 
     @property({ min: 0 })
     delay: number = 0;
+
+    @property({ min: 0, tooltip: "Seconds to wait after confetti finishes before entering the main level." })
+    postConfettiDelay: number = 0.1;
 
     @property({ type: Easing })
     easingOut: TweenEasing = 'backOut'
@@ -41,15 +46,23 @@ export class SplashScene extends Component {
     @property(Node)
     root: Node = null
 
-    @property({ type: CCInteger, min: 1 })
-    secondLevelKillTarget: number = 3;
+    get secondLevelKillTarget(): number {
+        return this.off?.getComponentsInChildren(XEnemy).length ?? 0;
+    }
 
+    @property({ type: Node, tooltip: "Confetti to finish before leaving the first level." })
+    public winConfetti: Node = null;
+
+    private _firstWinCelebrating: boolean = false;
     private _transitionPending: boolean = false;
     private _previousLevelNode: Node = null;
     private _gameController: XGameController = null;
     private _currentLevelTemplate: Node = null;
 
     protected onLoad(): void {
+        // The scene copy is a template, not a wall impact.
+        const crackTemplate = this.node.scene?.getChildByName("Canvas")?.getChildByName("Crack");
+        if (crackTemplate) crackTemplate.active = false;
         if (this.off?.isValid) {
             // Keep an untouched copy before gameplay destroys enemies or the x10 booster.
             const wasActive = this.off.active;
@@ -78,15 +91,32 @@ export class SplashScene extends Component {
             if (this._gameController) {
                 this._gameController.setLevel(this._previousLevelNode);
                 // Consume the first win so the scene's final-win UI does not run yet.
-                this._gameController.onLevelWin = () => this.trans();
+                this._gameController.onLevelWin = () => this.winPreviousLevel();
             }
         } else if (this._gameController && this.off?.isValid) {
             this._gameController.setLevel(this.off, this.secondLevelKillTarget);
         }
     }
 
+    protected winPreviousLevel(): void {
+        if (this._firstWinCelebrating || this._transitionPending) return;
+        this._previousLevelNode?.getComponent(AudioSource)?.play();
+        const confetti = this.winConfetti?.getComponent(ConfettiManager)
+            ?? this.node.scene?.getComponentInChildren(ConfettiManager);
+        if (!confetti?.enabledInHierarchy) {
+            this.trans();
+            return;
+        }
+        this._firstWinCelebrating = true;
+        confetti.playWinThen(() => {
+            if (!this.isValid) return;
+            this._firstWinCelebrating = false;
+            this.trans(this.postConfettiDelay);
+        });
+    }
+
     retryLevel(): void {
-        if (this._transitionPending || !this.root?.isValid || !this._gameController) return;
+        if (this._firstWinCelebrating || this._transitionPending || !this.root?.isValid || !this._gameController) return;
         const isPrevious = !!this._previousLevelNode;
         const source = isPrevious ? this.previousLevel : this._currentLevelTemplate;
         if (!source) return;
@@ -114,11 +144,13 @@ export class SplashScene extends Component {
         this.scheduleOnce(() => this.trans(), dur);
     }
 
-    trans() {
+    trans(delayOverride?: number) {
         const currentLevel = this._previousLevelNode ? this.off : null;
-        if (this._transitionPending || (!currentLevel?.isValid && !this.nextLevel) || !this.root?.isValid) return;
+        if (this._firstWinCelebrating || this._transitionPending || (!currentLevel?.isValid && !this.nextLevel) || !this.root?.isValid) return;
         this._transitionPending = true;
         this.list.forEach(_ => _.active = true);
+        var transitionDelay = typeof delayOverride === "number"
+            ? Math.max(0, delayOverride) : currentLevel ? this.delay * 0.5 : this.delay;
         this.scheduleOnce(() => {
             if (!this.root?.isValid) {
                 this._transitionPending = false;
@@ -147,6 +179,6 @@ export class SplashScene extends Component {
             }
             if (wasShowingPreviousLevel) this.list.forEach(_ => _.active = false);
             this._transitionPending = false;
-        }, this.delay);
+        }, transitionDelay);
     }
 }

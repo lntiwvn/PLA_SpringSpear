@@ -1,7 +1,6 @@
-import { _decorator, Collider2D, Color, Component, Enum, EventTouch, Graphics, TweenEasing, easing, math, Node, sp, UITransform, Vec2, Vec3 } from "cc";
+import { _decorator, Collider2D, Color, Component, Enum, EventTouch, Graphics, math, Node, Prefab, instantiate, sp, UITransform, Vec2, Vec3 } from "cc";
 import { EDITOR } from "cc/env";
 import { AnimSelector } from "./AnimSelector";
-import Easing from "./Easing";
 import { GameBoard } from "./GameBoard";
 import XGameBridge from "./XGameBridge";
 import { XEnemy } from "./XEnemy";
@@ -13,6 +12,7 @@ import { XSpearFlyingState } from "./XSpearFlyingState";
 import { XSpearIdleState } from "./XSpearIdleState";
 import { AudioSource } from "cc";
 import { ReflectionSpear } from "./ReflectionSpear";
+import { WallImpactSmokePool } from "./WallImpactSmokePool";
 
 const { ccclass, property, executeInEditMode } = _decorator;
 
@@ -30,29 +30,29 @@ export class XSpear extends Component {
     @property
     public spearLength: number = 200;
 
-    @property
-    public flySpeed: number = 1500;
+    @property({ min: 0, tooltip: "Maximum flight speed in board pixels per second." })
+    public flySpeed: number = 2250;
 
-    @property({ tooltip: "Initial speed scale applied right after release." })
-    public flyScale: number = 1;
+    @property({ min: 0, max: 1, tooltip: "Unity SpearFlightDefault: fraction of maximum speed at launch." })
+    public flightInitialSpeedRatio: number = 0.75;
 
-    @property({ tooltip: "Duration for flyScale to ease back to 1." })
-    public flyScaleDuration: number = 0.25;
+    @property({ min: 0, tooltip: "Seconds to reach maximum speed after launch." })
+    public flightAccelerationDuration: number = 0.07;
 
-    @property({ type: Easing })
-    public flyEasing: TweenEasing = "linear";
+    @property({ min: 1, step: 1, tooltip: "Speed curve t^power. Unity player spear uses 4." })
+    public flightAccelerationPower: number = 4;
 
-    @property({ type: Easing })
-    public flyScaleEasing: TweenEasing = "linear";
-
-    @property({ tooltip: "Minimum angle from the pinned edge." })
-    public minAngleFromEdge: number = 25;
+    @property({ min: 0, max: 90, tooltip: "Optional angle margin from a wall. Zero allows aiming parallel to the wall." })
+    public aimAngleMargin: number = 10;
 
     @property({ tooltip: "Distance threshold to stop rotation or pin when the spear head is already touching a wall." })
     public wallStickThreshold: number = 8;
 
     @property({ type: XSpearStateId })
     public defaultState: XSpearStateId = XSpearStateId.Idle;
+
+    @property({ type: Prefab, tooltip: "Wall impact mark spawned when the spear pins." })
+    public crackPrefab: Prefab = null;
 
     @property(AudioSource)
     compressAu: AudioSource = null
@@ -82,6 +82,9 @@ export class XSpear extends Component {
     @property(Node)
     public laserHeadNode: Node = null;
 
+    @property({ type: Node, tooltip: "Editor marker at the visible spear tip, used to stop flight at walls." })
+    public wallContactNode: Node = null;
+
     @property(Graphics)
     public laserGraphic: Graphics = null;
 
@@ -96,15 +99,14 @@ export class XSpear extends Component {
     protected readonly _dragTouchStart: Vec2 = new Vec2();
     protected readonly _dragFreeEndStart: Vec2 = new Vec2();
     protected _board: GameBoard = null;
+    protected _wallImpactSmokePool: WallImpactSmokePool = null;
     protected _didInitializeState: boolean = false;
-    protected _laserTarget: XEnemy | null = null;
-    protected _flightDistance: number = 0;
-    protected _flightProgress: number = 0;
-    protected _flightScaleElapsed: number = 0;
+    protected readonly _laserTargets: Set<XEnemy> = new Set();
+    protected _flightElapsed: number = 0;
     protected _skipInitializeStateFromPoseOnInit: boolean = false;
     protected _pendingInitStateId: XSpearStateId | null = null;
     protected readonly _previousHeadWorldPosition: Vec3 = new Vec3();
-    protected readonly _ignoredColliderIds: Set<string> = new Set();
+    protected _flightHitSegments: Array<{ from: Vec2; to: Vec2 }> = [];
     protected _map: Record<XSpearStateId, string> = {
         [XSpearStateId.Idle]: "",
         [XSpearStateId.Charging]: "",
@@ -174,6 +176,7 @@ export class XSpear extends Component {
 
     public init(board: GameBoard): void {
         this._board = board;
+        this._wallImpactSmokePool = this.node.scene.getComponentInChildren(WallImpactSmokePool);
         this.setSpearColliderEnabled(false);
         if (this._skipInitializeStateFromPoseOnInit) {
             const nextState = this._pendingInitStateId ?? XSpearStateId.Flying;
@@ -253,8 +256,7 @@ export class XSpear extends Component {
     }
 
     public getHeadPosition(): Vec2 {
-        const sourceNode = this.laserHeadNode ?? this.node;
-        const worldPosition = sourceNode.worldPosition;
+        const worldPosition = this.getHeadWorldPosition();
         const boardNode = this._board?.node ?? this.node.parent;
         if (!boardNode) {
             return new Vec2(worldPosition.x, worldPosition.y);
@@ -275,8 +277,29 @@ export class XSpear extends Component {
     }
 
     public getHeadWorldPosition(): Vec3 {
-        const sourceNode = this.laserHeadNode ?? this.node;
-        return sourceNode.worldPosition.clone();
+        // Flying collisions follow the visible tip; the laser marker belongs to aiming.
+        if (this.state === XSpearStateId.Flying) {
+            return this.getWallContactWorldPosition();
+        }
+        if (this.laserHeadNode) {
+            return this.laserHeadNode.worldPosition.clone();
+        }
+
+        return Vec3.transformMat4(new Vec3(), new Vec3(0, this.spearLength, 0), this.node.worldMatrix);
+    }
+
+    public getWallContactWorldPosition(): Vec3 {
+        if (this.wallContactNode) {
+            return this.wallContactNode.worldPosition.clone();
+        }
+
+        var visualTransform = this.visual ? this.visual.getComponent(UITransform) : null;
+        if (visualTransform) {
+            return Vec3.transformMat4(new Vec3(),
+                new Vec3(0, visualTransform.height * (1 - visualTransform.anchorY), 0),
+                this.visual.node.worldMatrix);
+        }
+        return Vec3.transformMat4(new Vec3(), new Vec3(0, this.spearLength, 0), this.node.worldMatrix);
     }
 
 
@@ -286,8 +309,10 @@ export class XSpear extends Component {
 
     public pinToEdge(edgePoint: Vec2, inwardDir: Vec2): void {
         this._pinnedEdgeNormal.set(inwardDir.x, inwardDir.y).normalize();
-        this._stuckUpDirection.set(inwardDir.x, inwardDir.y).normalize();
-        const angleDeg = math.toDegree(Math.atan2(-inwardDir.x, inwardDir.y));
+        const localDirection = this.getLocalDirectionFromBoard(inwardDir);
+        this._stuckUpDirection.set(localDirection.x, localDirection.y).normalize();
+        this._chargeDir.set(localDirection.x, localDirection.y).normalize();
+        const angleDeg = math.toDegree(Math.atan2(-localDirection.x, localDirection.y));
         this.node.angle = angleDeg;
         if (this._board) {
             const parentSpacePoint = this._board.toNodePoint(edgePoint, this.node.parent);
@@ -348,8 +373,9 @@ export class XSpear extends Component {
         const pinnedPos = this.getPinnedPosition();
         const touchDelta = localTouchPos.clone().subtract(this._dragTouchStart);
         const direction = this.getDragDirection(touchDelta, pinnedPos);
-        if (direction && this.isDirectionValid(direction)) {
-            this.applyAimDirection(direction);
+        if (direction) {
+            const clamped = this.clampAimDirection(direction);
+            if (!this.isDirectionBlockedByWall(clamped)) this.applyAimDirection(clamped);
         }
         // Consume each movement so reversing at an aim limit responds immediately.
         this.beginDrag(localTouchPos);
@@ -362,7 +388,8 @@ export class XSpear extends Component {
         this.shootAu?.play();
 
         this.resetDragState();
-        this._flyDirection.set(this._chargeDir.x, this._chargeDir.y);
+        const boardDirection = this.getBoardDirection(this._chargeDir);
+        this._flyDirection.set(boardDirection.x, boardDirection.y);
         this.beginFlightMotion();
         this.changeState<XSpearFlyingState>(XSpearStateId.Flying, [this.getAnim(XSpearStateId.Flying)]);
     }
@@ -377,15 +404,15 @@ export class XSpear extends Component {
         }
 
         const normalizedDirection = direction.clone().normalize();
+        const localDirection = this.getLocalDirectionFromBoard(normalizedDirection);
         this._pinnedEdgeNormal.set(source._pinnedEdgeNormal.x, source._pinnedEdgeNormal.y);
         this._stuckUpDirection.set(source._stuckUpDirection.x, source._stuckUpDirection.y);
-        this._chargeDir.set(normalizedDirection.x, normalizedDirection.y);
+        this._chargeDir.set(localDirection.x, localDirection.y);
         this._flyDirection.set(normalizedDirection.x, normalizedDirection.y);
-        this._flightDistance = source._flightDistance;
-        this._flightProgress = source._flightProgress;
-        this._flightScaleElapsed = source._flightScaleElapsed;
+        // Unity's CloneSpearPowerup launches each clone with its own acceleration clock.
+        this.beginFlightMotion();
         this.resetDragState();
-        this.node.angle = math.toDegree(Math.atan2(-normalizedDirection.x, normalizedDirection.y));
+        this.node.angle = math.toDegree(Math.atan2(-localDirection.x, localDirection.y));
         this.syncCollider();
         this.changeState<XSpearFlyingState>(XSpearStateId.Flying, [this.getAnim(XSpearStateId.Flying)]);
     }
@@ -396,6 +423,8 @@ export class XSpear extends Component {
         }
 
         const normalizedDirection = direction.clone().normalize();
+        this._board = source._board;
+        const localDirection = this.getLocalDirectionFromBoard(normalizedDirection);
         this._map = {
             [XSpearStateId.Idle]: source._map[XSpearStateId.Idle],
             [XSpearStateId.Charging]: source._map[XSpearStateId.Charging],
@@ -403,17 +432,14 @@ export class XSpear extends Component {
         };
         this._pinnedEdgeNormal.set(source._pinnedEdgeNormal.x, source._pinnedEdgeNormal.y);
         this._stuckUpDirection.set(source._stuckUpDirection.x, source._stuckUpDirection.y);
-        this._chargeDir.set(normalizedDirection.x, normalizedDirection.y);
+        this._chargeDir.set(localDirection.x, localDirection.y);
         this._flyDirection.set(normalizedDirection.x, normalizedDirection.y);
-        this._flightDistance = source._flightDistance;
-        this._flightProgress = source._flightProgress;
-        this._flightScaleElapsed = source._flightScaleElapsed;
-        this._ignoredColliderIds.clear();
+        this.beginFlightMotion();
         this._pendingInitStateId = source.state;
         this._skipInitializeStateFromPoseOnInit = true;
         this._didInitializeState = true;
         this.resetDragState();
-        this.node.angle = math.toDegree(Math.atan2(-normalizedDirection.x, normalizedDirection.y));
+        this.node.angle = math.toDegree(Math.atan2(-localDirection.x, localDirection.y));
         this.syncCollider();
     }
 
@@ -429,7 +455,7 @@ export class XSpear extends Component {
 
     public updateLaser(): void {
         const origin = this.getHeadPosition();
-        const direction = this._chargeDir.lengthSqr() > 0.0001 ? this._chargeDir.clone() : this.getLocalUp().normalize();
+        const direction = this.getBoardDirection(this._chargeDir.lengthSqr() > 0.0001 ? this._chargeDir : this.getLocalUp());
         const path = XGameBridge.get()?.castLaserPath(origin, direction);
         if (!path) {
             this.clearLaser();
@@ -437,26 +463,20 @@ export class XSpear extends Component {
             return;
         }
 
-        const nextTarget = path.enemy;
-        if (this._laserTarget && this._laserTarget !== nextTarget) {
-            this._laserTarget.clearScare();
+        const nextTargets = new Set(path.enemies);
+        for (const target of this._laserTargets) {
+            if (!nextTargets.has(target)) target.clearScare();
+        }
+        this._laserTargets.clear();
+        for (const target of nextTargets) {
+            this._laserTargets.add(target);
+            target.enterScare();
         }
 
-        this._laserTarget = nextTarget;
-        if (this._laserTarget) {
-            this._laserTarget.enterScare();
-        }
-
-        const color = nextTarget ? Color.GREEN : Color.RED;
-        if (!path.reflectionPoint) {
-            this.drawLaser(origin, path.point, color);
-            return;
-        }
-
-        this.drawLaserPath([
-            { from: origin, to: path.reflectionPoint, color: Color.RED },
-            { from: path.reflectionPoint, to: path.point, color },
-        ]);
+        this.drawLaserPath(path.segments.map(segment => ({
+            from: segment.from, to: segment.to,
+            color: segment.enemies.length > 0 ? Color.GREEN : Color.RED,
+        })));
     }
 
     public clearLaser(): void {
@@ -468,12 +488,8 @@ export class XSpear extends Component {
     }
 
     public clearLaserTarget(): void {
-        if (!this._laserTarget) {
-            return;
-        }
-
-        this._laserTarget.clearScare();
-        this._laserTarget = null;
+        for (const target of this._laserTargets) target.clearScare();
+        this._laserTargets.clear();
     }
 
     public updateFlying(dt: number): Collider2D | null | undefined {
@@ -481,27 +497,32 @@ export class XSpear extends Component {
             return undefined;
         }
 
-        const previousHeadWorld = this.getHeadWorldPosition();
-        const previousHeadBoard = this._board.toBoardPoint(previousHeadWorld);
+        var previousHeadWorld = this.getHeadWorldPosition();
+        var previousHeadBoard = this._board.toBoardPoint(previousHeadWorld);
+        var previousWallContact = this._board.toBoardPoint(this.getWallContactWorldPosition());
+        this._flightHitSegments = [{ from: this.getPinnedBoardPosition(), to: previousHeadBoard }];
         this._board.updateBounds();
-        if (!this._board.containsPoint(previousHeadBoard)) {
-            const edgePoint = this._board.clampPoint(previousHeadBoard);
-            const inward = new Vec2(-edgePoint.x, -edgePoint.y);
+        if (!this._board.containsPoint(previousWallContact)) {
+            var edgePoint = this._board.clampPoint(previousWallContact);
+            var inward = new Vec2(-edgePoint.x, -edgePoint.y);
             if (edgePoint.x <= this._board.minX) inward.set(1, 0);
             else if (edgePoint.x >= this._board.maxX) inward.set(-1, 0);
             else if (edgePoint.y <= this._board.minY) inward.set(0, 1);
             else inward.set(0, -1);
             this.pinToEdge(edgePoint, inward);
-            this.onPinned?.();
+            this.spawnWallImpact(edgePoint, inward);
+            if (this.onPinned) this.onPinned();
             return null;
         }
-        const moveDistance = this.getFlightMoveDistance(dt);
-        const reflectionHitAhead = XGameBridge.get()?.findReflectionHitForDirection(previousHeadBoard, this._flyDirection, moveDistance + 0.0001);
-        const wallHitAhead = this.getWallHitForDirection(previousHeadBoard, this._flyDirection, moveDistance + 0.0001);
+        var moveDistance = this.getFlightMoveDistance(dt);
+        var runtime = XGameBridge.get();
+        var reflectionHitAhead = runtime ? runtime.findReflectionHitForDirection(previousHeadBoard, this._flyDirection, moveDistance + 0.0001) : null;
+        // Sweep the rendered tip before moving so this frame cannot cross the wall.
+        var wallHitAhead = this.getWallHitForDirection(previousWallContact, this._flyDirection, moveDistance + 0.0001);
 
-        let firstHitKind: "reflection" | "wall" | null = null;
-        let firstHitDistance = moveDistance;
-        if (reflectionHitAhead && reflectionHitAhead.distance < firstHitDistance) {
+        var firstHitKind: "reflection" | "wall" | null = null;
+        var firstHitDistance = moveDistance;
+        if (reflectionHitAhead && reflectionHitAhead.distance <= firstHitDistance) {
             firstHitKind = "reflection";
             firstHitDistance = reflectionHitAhead.distance;
         }
@@ -509,21 +530,24 @@ export class XSpear extends Component {
             firstHitKind = "wall";
             firstHitDistance = wallHitAhead.distance;
         }
-        const travelDistance = Math.max(0, Math.min(moveDistance, firstHitDistance));
+        var travelDistance = Math.max(0, Math.min(moveDistance, firstHitDistance));
 
-        const boardPosition = this.getPinnedBoardPosition();
+        var boardPosition = this.getPinnedBoardPosition();
         boardPosition.add(this._flyDirection.clone().multiplyScalar(travelDistance));
-        const parentPosition = this._board.toNodePoint(boardPosition, this.node.parent);
+        var parentPosition = this._board.toNodePoint(boardPosition, this.node.parent);
         this.node.setPosition(parentPosition.x, parentPosition.y, parentPosition.z);
         this.syncCollider();
         this._previousHeadWorldPosition.set(previousHeadWorld.x, previousHeadWorld.y, previousHeadWorld.z);
+        // Keep the starting shaft so nearby enemies still hit after a large frame step.
+        this._flightHitSegments.push(
+            { from: previousHeadBoard, to: this.getHeadPosition() },
+            { from: this.getPinnedBoardPosition(), to: this.getHeadPosition() },
+        );
+        if (runtime) runtime.tryCloneSpear(this);
         if (firstHitKind === "reflection" && reflectionHitAhead) {
             this.reflectFlightDirection(reflectionHitAhead.point, reflectionHitAhead.normal);
-            XGameBridge.get()?.tryCloneSpear(this);
             return undefined;
         }
-
-        XGameBridge.get()?.tryCloneSpear(this);
 
         if (firstHitKind === "wall" && wallHitAhead) {
             this.pinAtWallHit(wallHitAhead.point, wallHitAhead.normal);
@@ -533,9 +557,13 @@ export class XSpear extends Component {
         return undefined;
     }
 
+    public getFlightHitSegments(): Array<{ from: Vec2; to: Vec2 }> {
+        return this._flightHitSegments;
+    }
+
     public checkCollisionWithCircle(center: Vec2, radius: number): boolean {
         const p1 = this.getPinnedBoardPosition();
-        const p2 = this.getFreeEndBoardPosition();
+        const p2 = this.getHeadPosition();
         return this.pointToSegmentDistance(center, p1, p2) <= radius;
     }
 
@@ -545,42 +573,13 @@ export class XSpear extends Component {
         }
 
         const rect = this.getColliderBoardRect(collider);
-        if (this.segmentIntersectsRect(this.getPinnedBoardPosition(), this.getFreeEndBoardPosition(), rect)) {
+        if (this.segmentIntersectsRect(this.getPinnedBoardPosition(), this.getHeadPosition(), rect)) {
             return true;
         }
 
         const previousHeadBoard = this._board.toBoardPoint(this._previousHeadWorldPosition);
         const currentHeadBoard = this.getHeadPosition();
         return this.segmentIntersectsRect(previousHeadBoard, currentHeadBoard, rect);
-    }
-
-    public captureIgnoredColliders(enemies: XEnemy[]): void {
-        this._ignoredColliderIds.clear();
-
-        for (const enemy of enemies) {
-            if (enemy.stateMachine.cid === null) {
-                continue;
-            }
-
-            this.captureIgnoredCollider(enemy.getBodyCollider());
-            this.captureIgnoredCollider(enemy.getBalloonCollider());
-        }
-    }
-
-    public refreshIgnoredColliders(enemies: XEnemy[]): void {
-        if (this._ignoredColliderIds.size <= 0) {
-            return;
-        }
-
-        for (const enemy of enemies) {
-            this.refreshIgnoredCollider(enemy.getBodyCollider());
-            this.refreshIgnoredCollider(enemy.getBalloonCollider());
-        }
-    }
-
-    public shouldIgnoreCollider(collider: Collider2D | null): boolean {
-        const colliderId = collider?.uuid;
-        return !!colliderId && this._ignoredColliderIds.has(colliderId);
     }
 
     public getTouchLocal(event: EventTouch, targetNode: Node): Vec2 {
@@ -593,6 +592,7 @@ export class XSpear extends Component {
 
     public setSpearColliderEnabled(value: boolean): void {
         if (value) {
+            this._flightHitSegments = [{ from: this.getPinnedBoardPosition(), to: this.getHeadPosition() }];
             const headWorld = this.getHeadWorldPosition();
             this._previousHeadWorldPosition.set(headWorld.x, headWorld.y, headWorld.z);
         }
@@ -625,12 +625,8 @@ export class XSpear extends Component {
             return;
         }
 
-        direction.normalize();
-        if (!this.isDirectionValid(direction)) {
-            return;
-        }
-
-        this.applyAimDirection(direction);
+        const clamped = this.clampAimDirection(direction.normalize());
+        if (!this.isDirectionBlockedByWall(clamped)) this.applyAimDirection(clamped);
     }
 
     protected beginDrag(touchPos: Vec2): void {
@@ -664,81 +660,34 @@ export class XSpear extends Component {
     }
 
     protected beginFlightMotion(): void {
-        this._flightDistance = Math.max(0, this.computeFlightDistance());
-        this._flightProgress = 0;
-        this._flightScaleElapsed = 0;
-    }
-
-    protected computeFlightDistance(): number {
-        if (!this._board || this._flyDirection.lengthSqr() < 0.0001) {
-            return 0;
-        }
-
-        const head = this.getHeadPosition();
-        const target = this.getWallHitForDirection(head, this._flyDirection);
-        if (!target) {
-            return 0;
-        }
-
-        return target.distance;
+        this._flightElapsed = 0;
     }
 
     protected getFlightMoveDistance(dt: number): number {
-        const speedScale = this.evaluateFlightSpeedScale(dt);
-        const linearDistance = this.flySpeed * speedScale * dt;
-        if (linearDistance <= 0 || this._flightDistance <= 0) {
-            return linearDistance;
-        }
-
-        const previousProgress = this._flightProgress;
-        this._flightProgress = math.clamp01(previousProgress + linearDistance / this._flightDistance);
-        const previousCurve = this.evaluateFlightEasing(previousProgress);
-        const currentCurve = this.evaluateFlightEasing(this._flightProgress);
-        const easedDistance = this._flightDistance * Math.max(0, currentCurve - previousCurve);
-        return easedDistance > 0 ? easedDistance : linearDistance;
+        var previousTime = this._flightElapsed;
+        this._flightElapsed += Math.max(0, dt);
+        // Integrate the speed curve so the same flight travels the same distance at any FPS.
+        return Math.max(0, this.flySpeed) * (this.integrateFlightSpeedScale(this._flightElapsed)
+            - this.integrateFlightSpeedScale(previousTime));
     }
 
-    protected evaluateFlightEasing(ratio: number): number {
-        const curve = easing[this.flyEasing];
-        const progress = math.clamp01(ratio);
-        return curve ? math.clamp01(curve(progress)) : progress;
+    protected evaluateFlightSpeedScale(elapsed: number): number {
+        var duration = Math.max(0, this.flightAccelerationDuration);
+        if (duration <= 0) return 1;
+        var ratio = math.clamp01(this.flightInitialSpeedRatio);
+        var progress = math.clamp01(elapsed / duration);
+        return math.lerp(ratio, 1, Math.pow(progress, Math.max(1, this.flightAccelerationPower)));
     }
 
-    protected evaluateFlightSpeedScale(dt: number): number {
-        const startScale = Math.max(0, this.flyScale);
-        if (Math.abs(startScale - 1) <= 0.0001) {
-            return 1;
-        }
-
-        const duration = Math.max(0, this.flyScaleDuration);
-        if (duration <= 0) {
-            return 1;
-        }
-
-        this._flightScaleElapsed += dt;
-        const ratio = math.clamp01(this._flightScaleElapsed / duration);
-        const curve = easing[this.flyScaleEasing];
-        const easedRatio = curve ? math.clamp01(curve(ratio)) : ratio;
-        return math.lerp(startScale, 1, easedRatio);
-    }
-
-    protected captureIgnoredCollider(collider: Collider2D | null): void {
-        if (!collider?.enabledInHierarchy || !this.intersectsCollider(collider)) {
-            return;
-        }
-
-        this._ignoredColliderIds.add(collider.uuid);
-    }
-
-    protected refreshIgnoredCollider(collider: Collider2D | null): void {
-        const colliderId = collider?.uuid;
-        if (!colliderId || !this._ignoredColliderIds.has(colliderId)) {
-            return;
-        }
-
-        if (!collider.enabledInHierarchy || !this.intersectsCollider(collider)) {
-            this._ignoredColliderIds.delete(colliderId);
-        }
+    protected integrateFlightSpeedScale(elapsed: number): number {
+        var time = Math.max(0, elapsed);
+        var duration = Math.max(0, this.flightAccelerationDuration);
+        if (duration <= 0) return time;
+        var ratio = math.clamp01(this.flightInitialSpeedRatio);
+        var power = Math.max(1, this.flightAccelerationPower);
+        var progress = math.clamp01(time / duration);
+        return duration * (ratio * progress + (1 - ratio) * Math.pow(progress, power + 1) / (power + 1))
+            + Math.max(0, time - duration);
     }
 
     protected getColliderBoardRect(collider: Collider2D): { x: number; y: number; width: number; height: number } {
@@ -753,34 +702,87 @@ export class XSpear extends Component {
         };
     }
 
+    protected getBoardDirection(direction: Vec2): Vec2 {
+        if (!this._board) return direction.clone().normalize();
+        const pinned = this.getPinnedPosition();
+        const target = this._board.fromNodePoint(
+            new Vec2(pinned.x + direction.x, pinned.y + direction.y), this.node.parent);
+        return target.subtract(this.getPinnedBoardPosition()).normalize();
+    }
+
+    protected clampAimDirection(direction: Vec2): Vec2 {
+        const normal = this._pinnedEdgeNormal.clone().normalize();
+        const boardDirection = this.getBoardDirection(direction);
+        let angle = Math.atan2(normal.x * boardDirection.y - normal.y * boardDirection.x,
+            Vec2.dot(normal, boardDirection));
+        const limit = math.toRadian(90 - math.clamp(this.aimAngleMargin, 0, 90));
+        let minAngle = -limit, maxAngle = limit;
+        for (const contact of this.getAimContactNormals()) {
+            const contactAngle = Math.atan2(normal.x * contact.y - normal.y * contact.x, Vec2.dot(normal, contact));
+            minAngle = Math.max(minAngle, contactAngle - limit);
+            maxAngle = Math.min(maxAngle, contactAngle + limit);
+        }
+        if (minAngle > maxAngle) return this._chargeDir.clone();
+        const current = this.getBoardDirection(this.getLocalUp());
+        const currentAngle = math.clamp(Math.atan2(normal.x * current.y - normal.y * current.x,
+            Vec2.dot(normal, current)), minAngle, maxAngle);
+        // Keep the same rotation branch when a drag crosses the outward direction.
+        while (angle - currentAngle > Math.PI) angle -= 2 * Math.PI;
+        while (angle - currentAngle < -Math.PI) angle += 2 * Math.PI;
+        const targetAngle = math.clamp(angle, minAngle, maxAngle);
+        const atAngle = (value: number) => this.getLocalDirectionFromBoard(new Vec2(
+            normal.x * Math.cos(value) - normal.y * Math.sin(value),
+            normal.x * Math.sin(value) + normal.y * Math.cos(value)));
+        const target = atAngle(targetAngle);
+        if (!this.isDirectionBlockedByWall(target)) return target;
+        let validAngle = currentAngle;
+        if (this.isDirectionBlockedByWall(atAngle(validAngle))) validAngle = (minAngle + maxAngle) * 0.5;
+        if (this.isDirectionBlockedByWall(atAngle(validAngle))) return this._chargeDir.clone();
+        let blockedAngle = targetAngle;
+        // Clamp to the wall contact instead of freezing at the last sampled direction.
+        for (let step = 0; step < 18; step++) {
+            const middle = (validAngle + blockedAngle) * 0.5;
+            if (this.isDirectionBlockedByWall(atAngle(middle))) blockedAngle = middle;
+            else validAngle = middle;
+        }
+        return atAngle(validAngle);
+    }
+
+    protected getAimContactNormals(): Vec2[] {
+        return [this._pinnedEdgeNormal.clone().normalize(),
+            ...(this._board?.getAimContactNormals(this.getPinnedBoardPosition()) ?? [])];
+    }
+
     protected isDirectionAngleValid(direction: Vec2): boolean {
-        const normalizedDirection = direction.clone().normalize();
-        const normalizedNormal = this._pinnedEdgeNormal.clone().normalize();
-        const maxAngleToNormal = math.toRadian(90 - this.minAngleFromEdge);
+        const normalizedDirection = this.getBoardDirection(direction);
+        const maxAngleToNormal = math.toRadian(90 - math.clamp(this.aimAngleMargin, 0, 90));
         const minDot = Math.cos(maxAngleToNormal);
-        const directionDot = Vec2.dot(normalizedDirection, normalizedNormal);
-        return directionDot >= minDot - 0.0001;
+        return this.getAimContactNormals().every(normal => Vec2.dot(normalizedDirection, normal) >= minDot - 0.0001);
     }
 
     protected isDirectionBlockedByWall(direction: Vec2): boolean {
-        const wallHit = this.getWallHitForDirection(this.getPinnedBoardPosition(), direction);
-        if (!wallHit) {
-            return false;
-        }
-
-        return Vec2.distance(this.getHeadPositionForDirection(direction), wallHit.point) <= this.wallStickThreshold;
+        return this._board?.isAimSegmentBlocked(this.getPinnedBoardPosition(), this.getHeadPositionForDirection(direction)) ?? false;
     }
 
     protected getHeadPositionForDirection(direction: Vec2): Vec2 {
-        const pinned = this.getPinnedBoardPosition();
+        const pinned = this.getPinnedPosition();
         const angle = Math.atan2(-direction.x, direction.y);
         const headOffset = this.getHeadLocalOffset();
+        // The aiming limit covers the whole shaft even if the laser marker is closer.
+        headOffset.y = Math.max(Math.abs(headOffset.y), this.spearLength);
+        const visualTransform = this.visual?.getComponent(UITransform);
+        if (visualTransform) {
+            const tipWorld = Vec3.transformMat4(new Vec3(),
+                new Vec3(0, visualTransform.height * (1 - visualTransform.anchorY), 0), this.visual.node.worldMatrix);
+            const tipLocal = this.node.inverseTransformPoint(new Vec3(), tipWorld);
+            headOffset.y = Math.max(headOffset.y, tipLocal.y);
+        }
         const cos = Math.cos(angle);
         const sin = Math.sin(angle);
-        return new Vec2(
-            pinned.x + headOffset.x * cos - headOffset.y * sin,
-            pinned.y + headOffset.x * sin + headOffset.y * cos,
-        );
+        const x = headOffset.x * this.node.scale.x;
+        const y = headOffset.y * this.node.scale.y;
+        const head = new Vec2(pinned.x + x * cos - y * sin, pinned.y + x * sin + y * cos);
+        return this._board ? this._board.fromNodePoint(head, this.node.parent) : head;
     }
 
     protected pointToSegmentDistance(point: Vec2, segA: Vec2, segB: Vec2): number {
@@ -893,9 +895,9 @@ export class XSpear extends Component {
             return point.clone();
         }
 
-        const worldPoint = boardNode.getWorldPosition().clone();
-        worldPoint.x += point.x;
-        worldPoint.y += point.y;
+        const worldPoint = this._board
+            ? this._board.toWorldPoint(point)
+            : Vec3.transformMat4(new Vec3(), new Vec3(point.x, point.y, 0), boardNode.worldMatrix);
 
         const localPoint = graphicNode.inverseTransformPoint(new Vec3(), worldPoint);
         return new Vec2(localPoint.x, localPoint.y);
@@ -922,6 +924,7 @@ export class XSpear extends Component {
     }
 
     protected pinAtWallHit(point: Vec2, normal: Vec2): void {
+        this.spawnWallImpact(point, normal);
         this._pinnedEdgeNormal.set(normal.x, normal.y);
         this.node.angle += 180;
         const parentSpacePoint = this._board.toNodePoint(point, this.node.parent);
@@ -929,6 +932,7 @@ export class XSpear extends Component {
         this.syncCollider();
         const stuckUp = this.getLocalUp();
         this._stuckUpDirection.set(stuckUp.x, stuckUp.y).normalize();
+        this._chargeDir.set(stuckUp.x, stuckUp.y).normalize();
         this.changeState<XSpearIdleState, XSpearFlyingState>(
             XSpearStateId.Idle,
             [this.getAnim(XSpearStateId.Idle)],
@@ -937,40 +941,41 @@ export class XSpear extends Component {
         this.onPinned?.();
     }
 
-    protected reflectFlightDirection(hitPoint: Vec2, normal: Vec2): void {
-        const hitWorld = this._board.toWorldPoint(hitPoint);
-        const currentHeadWorld = this.getHeadWorldPosition();
-        const worldCorrection = new Vec3(
-            hitWorld.x - currentHeadWorld.x,
-            hitWorld.y - currentHeadWorld.y,
-            hitWorld.z - currentHeadWorld.z,
-        );
-        const currentNodeWorld = this.node.worldPosition;
-        this.node.setWorldPosition(
-            currentNodeWorld.x + worldCorrection.x,
-            currentNodeWorld.y + worldCorrection.y,
-            currentNodeWorld.z + worldCorrection.z,
-        );
+    protected spawnWallImpact(point: Vec2, normal: Vec2): void {
+        if (this._board && this._wallImpactSmokePool) {
+            this._wallImpactSmokePool.playAt(this._board.node, this._board.toWorldPoint(point), normal);
+        }
+        if (!this._board || !this.node.parent) return;
+        const template = this.node.scene?.getChildByName("Canvas")?.getChildByName("Crack");
+        const crack = this.crackPrefab ? instantiate(this.crackPrefab) : template ? instantiate(template) : null;
+        if (!crack) return;
+        crack.active = true;
+        crack.setParent(this.node.parent);
+        crack.setPosition(this._board.toNodePoint(point, this.node.parent));
+        const localNormal = this.getLocalDirectionFromBoard(normal);
+        crack.angle = math.toDegree(Math.atan2(-localNormal.x, localNormal.y)) + 90;
+        crack.setSiblingIndex(this.node.getSiblingIndex());
+    }
 
+    protected getLocalDirectionFromBoard(direction: Vec2): Vec2 {
+        if (!this._board) return direction.clone().normalize();
+        const origin = this.getPinnedBoardPosition();
+        const from = this._board.toNodePoint(origin, this.node.parent);
+        const to = this._board.toNodePoint(origin.add(direction), this.node.parent);
+        return new Vec2(to.x - from.x, to.y - from.y).normalize();
+    }
+
+    protected reflectFlightDirection(hitPoint: Vec2, normal: Vec2): void {
         const reflectedDirection = ReflectionSpear.reflectDirection(this._flyDirection, normal);
         this._flyDirection.set(reflectedDirection.x, reflectedDirection.y);
-        this._chargeDir.set(reflectedDirection.x, reflectedDirection.y);
-        this.node.angle = math.toDegree(Math.atan2(-reflectedDirection.x, reflectedDirection.y));
+        const localDirection = this.getLocalDirectionFromBoard(reflectedDirection);
+        this._chargeDir.set(localDirection.x, localDirection.y);
+        this.node.angle = math.toDegree(Math.atan2(-localDirection.x, localDirection.y));
 
-        const pushedHeadBoard = hitPoint.clone().add(reflectedDirection.clone().multiplyScalar(0.5));
-        const pushedHeadWorld = this._board.toWorldPoint(pushedHeadBoard);
-        const alignedHeadWorld = this.getHeadWorldPosition();
-        const pushCorrection = new Vec3(
-            pushedHeadWorld.x - alignedHeadWorld.x,
-            pushedHeadWorld.y - alignedHeadWorld.y,
-            pushedHeadWorld.z - alignedHeadWorld.z,
-        );
-        const correctedNodeWorld = this.node.worldPosition;
-        this.node.setWorldPosition(
-            correctedNodeWorld.x + pushCorrection.x,
-            correctedNodeWorld.y + pushCorrection.y,
-            correctedNodeWorld.z + pushCorrection.z,
-        );
+        // The impact end becomes the tail. Keeping the new head at the mirror would
+        // teleport the shaft through it and hit enemies on the opposite side.
+        const pushedTailBoard = hitPoint.clone().add(reflectedDirection.clone().multiplyScalar(0.5));
+        this.node.setPosition(this._board.toNodePoint(pushedTailBoard, this.node.parent));
         this.syncCollider();
     }
 }

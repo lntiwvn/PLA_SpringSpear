@@ -9,7 +9,6 @@ export class XSpearFlyingState implements IState<XSpear, [string], []> {
         context.clearLaserTarget();
         context.setSpearColliderEnabled(true);
         context.playAnimation(animationName, true);
-        XGameBridge.get()?.captureSpearLaunchOverlaps(context);
         XGameObserver.invoke("onSpearFly", context);
     }
 
@@ -17,28 +16,21 @@ export class XSpearFlyingState implements IState<XSpear, [string], []> {
 
     public update(context: XSpear, dt: number): void {
         const pinnedZone = context.updateFlying(dt);
+        const runtime = XGameBridge.get();
+        if (runtime) {
+            // The last travel segment still hits enemies when this frame pins or reflects.
+            for (const hit of runtime.findSpearHits(context)) {
+                if (hit.kind === "body") {
+                    XGameObserver.invoke("onEnemyDead", hit.enemy, context);
+                } else {
+                    hit.enemy.hideBalloon();
+                    hit.enemy.setBalloonColliderEnabled(false);
+                    XGameObserver.invoke("onBalloonPop", hit.enemy);
+                }
+            }
+        }
         if (pinnedZone !== undefined) {
             XGameObserver.invoke("onSpearPinned", context, pinnedZone);
-            return;
         }
-
-        const runtime = XGameBridge.get();
-        if (!runtime) {
-            return;
-        }
-
-        const hit = runtime.findSpearHit(context);
-        if (!hit) {
-            return;
-        }
-
-        if (hit.kind === "body") {
-            XGameObserver.invoke("onEnemyDead", hit.enemy, context);
-            return;
-        }
-
-        hit.enemy.hideBalloon();
-        hit.enemy.setBalloonColliderEnabled(false);
-        XGameObserver.invoke("onBalloonPop", hit.enemy);
     }
 }

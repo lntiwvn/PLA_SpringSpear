@@ -12,6 +12,7 @@ export type XEnemyHitData = {
 
 export type XGameLaserHit = {
     enemy: XEnemy | null;
+    enemies: XEnemy[];
     point: Vec2;
 };
 
@@ -22,20 +23,24 @@ export type XGameReflectionHit = {
 };
 
 export type XGameLaserPath = {
+    segments: Array<{ from: Vec2; to: Vec2; enemies: XEnemy[] }>;
     enemy: XEnemy | null;
+    enemies: XEnemy[];
+    directEnemies: XEnemy[];
+    reflectedEnemies: XEnemy[];
     point: Vec2;
     reflectionPoint: Vec2 | null;
 };
 
 export type XGameBridgeRuntime = {
-    captureSpearLaunchOverlaps(spear: XSpear): void;
     tryCloneSpear(spear: XSpear): void;
     findSpearHit(spear: XSpear): XSpearHitResult;
+    findSpearHits(spear: XSpear): Array<NonNullable<XSpearHitResult>>;
     findReflectionHitForDirection(origin: Vec2, direction: Vec2, maxDistance: number): XGameReflectionHit | null;
     findGroundColliderForEnemy(enemy: XEnemy): Collider2D | null;
     getBoard(): GameBoard | null;
     resolveEnemyHitData(enemy: XEnemy, spear: XSpear): XEnemyHitData;
-    castLaser(origin: Vec2, direction: Vec2): XGameLaserHit | null;
+    castLaser(origin: Vec2, direction: Vec2, maxDistance?: number): XGameLaserHit | null;
     castLaserPath(origin: Vec2, direction: Vec2): XGameLaserPath | null;
     findReflectionHitAlongSegment(from: Vec2, to: Vec2): XGameReflectionHit | null;
     addSpear(spear: XSpear): void

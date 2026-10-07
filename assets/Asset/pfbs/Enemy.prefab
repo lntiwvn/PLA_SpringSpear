@@ -47,6 +47,9 @@
       },
       {
         "__id__": 225
+      },
+      {
+        "__id__": 299
       }
     ],
     "_active": true,
@@ -3911,7 +3914,9 @@
     ],
     "deadAu": null,
     "scareAu": null,
-    "balloonPop": null,
+    "balloonPop": {
+      "__id__": 301
+    },
     "baloonPopPart": [
       {
         "__id__": 87
@@ -3959,6 +3964,10 @@
       "__id__": 222
     },
     "moveSpeed": 300,
+    "balloonMoveType": 1,
+    "balloonMoveDistance": 100,
+    "balloonMoveDuration": 1,
+    "balloonWaitTime": 0,
     "splitSpeedX": 500,
     "splitSpeedY": 600,
     "targetPos": {
@@ -4736,5 +4745,89 @@
         "__id__": 153
       }
     ]
+  },
+  {
+    "__type__": "cc.Node",
+    "_name": "SFX_Balloon_Pop",
+    "_objFlags": 0,
+    "__editorExtras__": {},
+    "_parent": {
+      "__id__": 1
+    },
+    "_children": [],
+    "_active": true,
+    "_components": [
+      {
+        "__id__": 301
+      }
+    ],
+    "_prefab": {
+      "__id__": 300
+    },
+    "_lpos": {
+      "__type__": "cc.Vec3",
+      "x": 0,
+      "y": 0,
+      "z": 0
+    },
+    "_lrot": {
+      "__type__": "cc.Quat",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "w": 1
+    },
+    "_lscale": {
+      "__type__": "cc.Vec3",
+      "x": 1,
+      "y": 1,
+      "z": 1
+    },
+    "_mobility": 0,
+    "_layer": 33554432,
+    "_euler": {
+      "__type__": "cc.Vec3",
+      "x": 0,
+      "y": 0,
+      "z": 0
+    },
+    "_id": ""
+  },
+  {
+    "__type__": "cc.PrefabInfo",
+    "root": {
+      "__id__": 1
+    },
+    "asset": {
+      "__id__": 0
+    },
+    "fileId": "f0f3c531-e89e-45bd-b20a-0c39857f5fe8",
+    "instance": null,
+    "targetOverrides": null
+  },
+  {
+    "__type__": "cc.AudioSource",
+    "_name": "",
+    "_objFlags": 0,
+    "__editorExtras__": {},
+    "node": {
+      "__id__": 299
+    },
+    "_enabled": true,
+    "__prefab": {
+      "__id__": 302
+    },
+    "_clip": {
+      "__uuid__": "61aead2e-454f-49bf-8645-0c9c70bae602",
+      "__expectedType__": "cc.AudioClip"
+    },
+    "_loop": false,
+    "_playOnAwake": false,
+    "_volume": 1,
+    "_id": ""
+  },
+  {
+    "__type__": "cc.CompPrefabInfo",
+    "fileId": "707cafcb-a86f-4874-848e-555283cc3f53"
   }
 ]

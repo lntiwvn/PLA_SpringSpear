@@ -3,5 +3,19 @@
   "uuid": "6b9ee4ad-fef4-4666-8396-d12ca758bc0d",
   "creator": {
     "version": "3.8.7"
+  },
+  "scripts": {
+    "optimize": "tsx tools/optimize.ts",
+    "change-name": "tsx tools/change-name.ts"
+  },
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^25.0.5",
+    "papaparse": "^5.5.3",
+    "tsx": "^4.22.4"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "sharp": "^0.34.5"
   }
 }

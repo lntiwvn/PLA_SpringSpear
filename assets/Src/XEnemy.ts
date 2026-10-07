@@ -1,4 +1,4 @@
-import { _decorator, Collider2D, Component, IVec2Like, RigidBody2D, UITransform, Vec2, Vec3, sp, v2, v3 } from "cc";
+import { _decorator, Collider2D, Component, IVec2Like, PHYSICS_2D_PTM_RATIO, RigidBody2D, UITransform, Vec2, Vec3, sp, v2, v3 } from "cc";
 import { IState } from "./IState";
 import { PhysicManager } from "./PhysicManager";
 import { StateEnterArgs, StateExitArgs } from "./State";
@@ -21,6 +21,7 @@ type XEnemySplitPiece = {
     body: RigidBody2D;
     localPosition: Vec3;
     localAngle: number;
+    localScale: Vec3;
 };
 
 export enum XEnemyStateId {
@@ -32,6 +33,13 @@ export enum XEnemyStateId {
 }
 
 Enum(XEnemyStateId);
+
+export enum BalloonMoveType {
+    None = 0,
+    Vertical,
+}
+
+Enum(BalloonMoveType);
 
 @ccclass("XEnemy")
 @executeInEditMode()
@@ -81,6 +89,13 @@ export class XEnemy extends Component {
     @property(Collider2D)
     public bodyCollider: Collider2D = null;
 
+    @property({ tooltip: "Ignore spear damage and death for this enemy." })
+    public damageImmune: boolean = false;
+
+    public isDamageImmune(): boolean {
+        return this.damageImmune || this.node.name.toLowerCase() === "banana";
+    }
+
     @property(Collider2D)
     public balloonCollider: Collider2D = null;
 
@@ -102,11 +117,29 @@ export class XEnemy extends Component {
     @property({ tooltip: "Movement speed in pixels per second while looping between start and target." })
     public moveSpeed: number = 150;
 
+    @property({ type: BalloonMoveType, tooltip: "Movement of the balloon and its attached enemy. None keeps them stationary." })
+    public balloonMoveType: BalloonMoveType = BalloonMoveType.Vertical;
+
+    @property({ min: 0, tooltip: "Upward travel in parent-space pixels, measured from the starting position." })
+    public balloonMoveDistance: number = 100;
+
+    @property({ min: 0, tooltip: "Seconds for each upward or downward leg." })
+    public balloonMoveDuration: number = 1;
+
+    @property({ min: 0, tooltip: "Seconds to wait before starting and at each endpoint." })
+    public balloonWaitTime: number = 0;
+
     @property({ tooltip: "Horizontal speed applied to split pieces." })
     public splitSpeedX: number = 300;
 
     @property({ tooltip: "Initial vertical speed applied to split pieces." })
     public splitSpeedY: number = 400;
+
+    @property({ min: 0, max: 1, tooltip: "Scale the launch velocity of all slice pieces." })
+    public splitSpeedScale: number = 0.5;
+
+    @property({ min: 0, tooltip: "Gravity multiplier for slice pieces. Lower values make them fall more slowly." })
+    public splitGravityScale: number = 0.35;
 
     @property(UITransform)
     public targetPos: UITransform = null;
@@ -118,6 +151,9 @@ export class XEnemy extends Component {
     protected _moveProgress: number = 0;
     protected _moveDirection: 1 | -1 = 1;
     protected _moveDistance: number = 0;
+    protected readonly _balloonStartPosition: Vec3 = new Vec3();
+    protected _balloonMoveElapsed: number = 0;
+    protected _didInitializeBalloonMove: boolean = false;
     protected _splitPieces: XEnemySplitPiece[] = [];
     protected _pendingSplitKind: XEnemySplitKind = "vertical";
     protected _pendingHitDirection: Vec2 = new Vec2(0, 1);
@@ -198,6 +234,13 @@ export class XEnemy extends Component {
 
     protected update(dt: number): void {
         if(EDITOR) return
+        const state = this.stateMachine.cid;
+        if (this.isBalloonAvailable() && (state === XEnemyStateId.Idle
+            || state === XEnemyStateId.Moving || state === XEnemyStateId.Scare)) {
+            // The balloon carries the whole existing enemy hierarchy, including its colliders.
+            this.updateBalloonMoveLoop(dt);
+            return;
+        }
         this._stateMachine.update(this, dt);
     }
 
@@ -234,7 +277,8 @@ export class XEnemy extends Component {
         for (const piece of this._splitPieces) {
             piece.body.node.active = false;
             piece.body.node.setPosition(piece.localPosition);
-            piece.body.node.angle = piece.localAngle;
+            piece.body.node.setRotationFromEuler(0, 0, piece.localAngle);
+            piece.body.node.setScale(piece.localScale);
             piece.body.linearVelocity = v2();
             piece.body.angularVelocity = 0;
         }
@@ -252,6 +296,7 @@ export class XEnemy extends Component {
             body: _body,
             localPosition: _body.node.position.clone(),
             localAngle: _body.node.angle,
+            localScale: _body.node.scale.clone(),
         }));
     }
 
@@ -269,6 +314,7 @@ export class XEnemy extends Component {
     }
 
     public beginSplit(): boolean {
+        if (this.isDamageImmune()) return false;
         const activePieces = this.getSplitPiecesForKind(this._pendingSplitKind);
         if (activePieces.length <= 0) {
             return false;
@@ -286,17 +332,15 @@ export class XEnemy extends Component {
             const linearVelocity = new Vec2(
                 normalizedHit.x * this.splitSpeedX * 0.6 + outward.x * splitBias.x,
                 Math.max(0, normalizedHit.y) * this.splitSpeedY * 0.35 + splitBias.y + outward.y * splitBias.y,
-            );
+            ).multiplyScalar(Math.max(0, this.splitSpeedScale) / PHYSICS_2D_PTM_RATIO);
 
             piece.body.node.active = true;
             piece.body.type = ERigidBody2DType.Dynamic
-            const mass = piece.body.getMass();
+            piece.body.gravityScale = Math.max(0, this.splitGravityScale);
             piece.body.linearVelocity = linearVelocity;
-            piece.body.angularVelocity = 180 * (outward.x !== 0 ? -outward.x : outward.y || 1);
-            piece.body.applyForceToCenter(new Vec2(
-                linearVelocity.x * mass,
-                linearVelocity.y * mass,
-            ), true);
+            // Cocos 2D physics expects radians per second, not degrees.
+            piece.body.angularVelocity = Math.PI * Math.max(0, this.splitSpeedScale)
+                * (outward.x !== 0 ? -outward.x : outward.y || 1);
         }
 
         return true;
@@ -347,6 +391,45 @@ export class XEnemy extends Component {
         const nextPosition = new Vec3();
         Vec3.lerp(nextPosition, this._startPosition, this._moveTargetPosition, this._moveProgress);
         this.node.setPosition(nextPosition);
+        this.syncColliders();
+    }
+
+    protected updateBalloonMoveLoop(dt: number): void {
+        if (this.balloonMoveType !== BalloonMoveType.Vertical || this.balloonMoveDistance <= 0
+            || this.balloonMoveDuration <= 0 || !Number.isFinite(dt) || dt <= 0) {
+            return;
+        }
+
+        if (!this._didInitializeBalloonMove) {
+            // Capture after spawning/level configuration; scare and idle changes must not restart the loop.
+            this._balloonStartPosition.set(this.node.position);
+            this._balloonMoveElapsed = 0;
+            this._didInitializeBalloonMove = true;
+        }
+
+        this._balloonMoveElapsed += dt;
+        const wait = Math.max(0, this.balloonWaitTime);
+        const elapsed = this._balloonMoveElapsed - wait;
+        if (elapsed < 0) return;
+
+        const duration = this.balloonMoveDuration;
+        const phase = elapsed % (2 * (duration + wait));
+        let progress: number;
+        if (phase < duration) {
+            progress = phase / duration;
+        } else if (phase < duration + wait) {
+            progress = 1;
+        } else if (phase < 2 * duration + wait) {
+            progress = 1 - (phase - duration - wait) / duration;
+        } else {
+            progress = 0;
+        }
+
+        this.node.setPosition(
+            this._balloonStartPosition.x,
+            this._balloonStartPosition.y + this.balloonMoveDistance * progress,
+            this._balloonStartPosition.z,
+        );
         this.syncColliders();
     }
 
@@ -423,6 +506,7 @@ export class XEnemy extends Component {
         enterArgs: StateEnterArgs<_TEnter> = [] as unknown as StateEnterArgs<_TEnter>,
         exitArgs: StateExitArgs<_TExit> = [] as unknown as StateExitArgs<_TExit>,
     ): boolean {
+        if (stateId === XEnemyStateId.Dead && this.isDamageImmune()) return false;
         return this._stateMachine.change<_TEnter, _TExit>(stateId, this, enterArgs, exitArgs);
     }
 
@@ -490,7 +574,7 @@ export class XEnemy extends Component {
     }
 
     public enterDead(splitKind?: XEnemySplitKind, hitDirection?: Vec2): boolean {
-        if (this.stateMachine.cid === XEnemyStateId.Dead) {
+        if (this.isDamageImmune() || this.stateMachine.cid === XEnemyStateId.Dead) {
             return false;
         }
 
@@ -548,12 +632,11 @@ export class XEnemy extends Component {
     }
 
     public hideBalloon(): void {
-        if (this.balloonCollider?.node) {
-            this.balloonCollider.node.active = false;
-            if(this.balloonCollider.node.active) {
-                this.balloonPop?.play();
-                this.baloonPopPart.forEach(_ => _?.play())
-            }
-        }
+        const balloon = this.balloonCollider?.node;
+        if (!balloon?.active) return;
+        // Read the state before hiding so repeated hits do not replay the pop.
+        this.balloonPop?.play();
+        this.baloonPopPart.forEach(particle => particle?.play());
+        balloon.active = false;
     }
 }

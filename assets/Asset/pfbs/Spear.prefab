@@ -223,7 +223,11 @@
     "_parent": {
       "__id__": 1
     },
-    "_children": [],
+    "_children": [
+      {
+        "__id__": 42
+      }
+    ],
     "_active": true,
     "_components": [
       {
@@ -840,8 +844,8 @@
       "__id__": 37
     },
     "spearLength": 490,
-    "flySpeed": 1500,
-    "minAngleFromEdge": 25,
+    "flySpeed": 6750,
+    "aimAngleMargin": 10,
     "defaultState": 0,
     "_visual": {
       "__id__": 11
@@ -864,7 +868,17 @@
       "__id__": 5
     },
     "laserWidth": 10,
-    "_id": ""
+    "_id": "",
+    "crackPrefab": {
+      "__uuid__": "eddbc217-facb-4aca-b78d-af6877eaa7a8",
+      "__expectedType__": "cc.Prefab"
+    },
+    "flightInitialSpeedRatio": 0.75,
+    "flightAccelerationDuration": 0.07,
+    "flightAccelerationPower": 4,
+    "wallContactNode": {
+      "__id__": 42
+    }
   },
   {
     "__type__": "cc.CompPrefabInfo",
@@ -895,5 +909,61 @@
     },
     "fileId": "3116nMJONHlZs0Uhb7J0Pp",
     "targetOverrides": null
+  },
+  {
+    "__type__": "cc.Node",
+    "_name": "WallContact",
+    "_objFlags": 0,
+    "__editorExtras__": {},
+    "_parent": {
+      "__id__": 8
+    },
+    "_children": [],
+    "_active": true,
+    "_components": [],
+    "_prefab": {
+      "__id__": 43
+    },
+    "_lpos": {
+      "__type__": "cc.Vec3",
+      "x": 0,
+      "y": 2739.010009765625,
+      "z": 0
+    },
+    "_lrot": {
+      "__type__": "cc.Quat",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "w": 1
+    },
+    "_lscale": {
+      "__type__": "cc.Vec3",
+      "x": 1,
+      "y": 1,
+      "z": 1
+    },
+    "_mobility": 0,
+    "_layer": 33554432,
+    "_euler": {
+      "__type__": "cc.Vec3",
+      "x": 0,
+      "y": 0,
+      "z": 0
+    },
+    "_id": ""
+  },
+  {
+    "__type__": "cc.PrefabInfo",
+    "root": {
+      "__id__": 1
+    },
+    "asset": {
+      "__id__": 0
+    },
+    "fileId": "0d710b9d67be4d1aaf086c",
+    "instance": null,
+    "targetOverrides": null,
+    "nestedPrefabInstanceRoots": null
   }
 ]
