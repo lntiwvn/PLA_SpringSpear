@@ -1,4 +1,4 @@
-import { _decorator, Collider2D, Component, ERaycast2DType, EventTouch, Node, PhysicsSystem2D, Vec2, Vec3, UITransform, v2 } from "cc";
+import { _decorator, CCInteger, Collider2D, Component, ERaycast2DType, EventHandler, EventTouch, Label, Node, PhysicsSystem2D, UIOpacity, Vec2, Vec3, UITransform, v2 } from "cc";
 import { GameBoard } from "./GameBoard";
 import XGameBridge, { XEnemyHitData, XGameLaserHit, XGameLaserPath, XGameReflectionHit } from "./XGameBridge";
 import { XEnemy, XEnemyStateId } from "./XEnemy";
@@ -31,8 +31,31 @@ export class XGameController extends Component {
     @property({})
     isAllowDrag: boolean = true;
 
+    @property({ type: CCInteger, min: 1 })
+    public throwLimit: number = 5;
+
+    @property(Label)
+    public killCounter: Label = null;
+
+    @property([UIOpacity])
+    public throwIcons: UIOpacity[] = [];
+
+    @property(Node)
+    public losePopup: Node = null;
+
+    @property([EventHandler])
+    public storeEvents: EventHandler[] = [];
+
+    public onLevelRetry: (() => void) | null = null;
+    public throwsUsed: number = 0;
+    public storeKillTarget: number = 0;
+    protected _outcome: "playing" | "won" | "lost" | "store" = "playing";
+    protected _shotInFlight: boolean = false;
+
     protected _observerDisposers: Array<() => void> = [];
     protected _didInvokeEveryEnemyDie: boolean = false;
+
+    public onLevelWin: (() => void) | null = null;
 
     public static get instance(): XGameController | null {
         return this._instance;
@@ -41,9 +64,62 @@ export class XGameController extends Component {
     protected onLoad(): void {
         XGameController._instance = this;
         XGameBridge.set(this);
+        this.resetRound();
     }
 
     protected _spear: Map<string, XSpear> = new Map();
+
+    public setLevel(level: Node, storeKillTarget: number = 0): void {
+        this._spear.clear();
+        this._didInvokeEveryEnemyDie = false;
+        this.enemies = level.getComponentsInChildren(XEnemy);
+        this.storeKillTarget = storeKillTarget;
+        this.resetRound();
+        for (const spear of level.getComponentsInChildren(XSpear)) {
+            if (spear.enabledInHierarchy) this.addSpear(spear);
+        }
+    }
+
+    protected resetRound(): void {
+        this.throwsUsed = 0;
+        this._outcome = "playing";
+        this._shotInFlight = false;
+        if (this.losePopup) this.losePopup.active = false;
+        this.refreshRoundUI();
+    }
+
+    protected get deadCount(): number {
+        return this.enemies.filter(enemy => enemy?.stateMachine.cid === XEnemyStateId.Dead).length;
+    }
+
+    protected refreshRoundUI(): void {
+        if (this.killCounter) this.killCounter.string = `${this.deadCount}/${this.storeKillTarget || this.enemies.length}`;
+        this.throwIcons.forEach((icon, index) => {
+            if (icon) icon.opacity = index < this.throwLimit - this.throwsUsed ? 255 : 45;
+        });
+    }
+
+    protected canStartThrow(): boolean {
+        return this._outcome === "playing" && !this._shotInFlight && this.throwsUsed < this.throwLimit;
+    }
+
+    protected lateUpdate(): void {
+        if (!this._shotInFlight || this._outcome !== "playing") return;
+        const isFlying = Array.from(this._spear.values()).some(spear => spear.isValid
+            && spear.enabledInHierarchy && spear.state === XSpearStateId.Flying);
+        if (isFlying) return;
+        this._shotInFlight = false;
+        this.invokeEveryEnemyDieIfNeeded();
+        if (this._outcome === "playing" && this.throwsUsed >= this.throwLimit) {
+            this._outcome = "lost";
+            if (this.losePopup) this.losePopup.active = true;
+        }
+    }
+
+    public retryLevel(): void {
+        if (this._outcome !== "lost") return;
+        this.onLevelRetry?.();
+    }
 
     addSpear(spear: XSpear) {
         if(!spear) return;
@@ -77,8 +153,9 @@ export class XGameController extends Component {
     }
 
     protected _onOneTouchStart() {
+        if (!this.canStartThrow()) return;
         for(const _sp of this._spear.values()) {
-            _sp.startCharge(_sp.getHeadPosition());
+            if (_sp.enabledInHierarchy) _sp.startCharge(_sp.getHeadPosition());
         }
     }
 
@@ -101,13 +178,15 @@ export class XGameController extends Component {
     }
 
     protected onTouchStart(event: EventTouch): void {
+        if (!this.canStartThrow()) return;
         const _t = this.getTouchLocal(event);
         for(const _sp of this._spear.values()) {
-            _sp.startCharge(_t);
+            if (_sp.enabledInHierarchy) _sp.startCharge(_t);
         }
     }
 
     protected onTouchMove(event: EventTouch): void {
+        if (!this.canStartThrow()) return;
         const _t = this.getTouchLocal(event);
         const _w = event.getUILocation();
         for(const _sp of this._spear.values()) {
@@ -116,9 +195,14 @@ export class XGameController extends Component {
     }
 
     protected onTouchEnd(): void {
-        for(const _sp of this._spear.values()) {
-            _sp.release();
-        }
+        if (!this.canStartThrow()) return;
+        const charged = Array.from(this._spear.values()).filter(spear => spear.enabledInHierarchy
+            && spear.state === XSpearStateId.Charging);
+        if (!charged.length) return;
+        this.throwsUsed += 1;
+        this._shotInFlight = true;
+        this.refreshRoundUI();
+        charged.forEach(spear => spear.release());
     }
 
     protected getTouchLocal(event: EventTouch): Vec2 {
@@ -208,7 +292,9 @@ export class XGameController extends Component {
                 continue;
             }
 
-            if (groundCollider.worldAABB.intersects(legRect)) {
+            const groundRect = groundCollider.worldAABB;
+            if (legRect.xMin <= groundRect.xMax && legRect.xMax >= groundRect.xMin
+                && legRect.yMin <= groundRect.yMax && legRect.yMax >= groundRect.yMin) {
                 return groundCollider;
             }
         }
@@ -605,12 +691,19 @@ export class XGameController extends Component {
     }
 
     protected onEnemyDead(enemy: XEnemy, _spear: XSpear): void {
+        if (this._outcome !== "playing" || !this.enemies.includes(enemy)) return;
         const hitData = this.resolveEnemyHitData(enemy, _spear);
         const didChange = enemy.enterDead(hitData.splitKind, hitData.hitDirection);
         if (!didChange) {
             return;
         }
 
+        this.refreshRoundUI();
+        if (this.storeKillTarget > 0 && this.deadCount >= this.storeKillTarget) {
+            this._outcome = "store";
+            EventHandler.emitEvents(this.storeEvents);
+            return;
+        }
         this.invokeEveryEnemyDieIfNeeded();
     }
 
@@ -623,7 +716,7 @@ export class XGameController extends Component {
     }
 
     protected invokeEveryEnemyDieIfNeeded(): void {
-        if (this._didInvokeEveryEnemyDie || this.enemies.length <= 0) {
+        if (this._outcome !== "playing" || this._didInvokeEveryEnemyDie || this.enemies.length <= 0) {
             return;
         }
 
@@ -633,7 +726,12 @@ export class XGameController extends Component {
         }
 
         this._didInvokeEveryEnemyDie = true;
-        XGameObserver.invoke("onEveryEnemyDie");
+        this._outcome = "won";
+        if (this.onLevelWin) {
+            this.onLevelWin();
+        } else {
+            XGameObserver.invoke("onEveryEnemyDie");
+        }
     }
 
 }
